@@ -19,23 +19,24 @@
 
 // ---------------------------------------------------------------------------
 // Pin map. The board labels (P0, P1 ...) are NOT ESP32 GPIO numbers; Arduino
-// code needs the GPIO number. This is the mPython / handpy layout used by
-// boards that ship the MPython.h library -- check it against your board's
-// pinout card.
-//   P0=33  P1=32  P2=35*  P3=34*  P4=39*  P5=0 (button A)  P11=2 (button B)
-//   P20=23 (I2C SDA, shared with the on-board screen)  P23=27
-//   * input-only GPIOs: a DHT sensor cannot work on them.
+// code needs the GPIO number.
+//   Big edge pads:   P0=33  P1=32  P2=35 (input-only, DHT cannot work)
+//   Front touch pads: P23 "P"=27  P24 "Y"=14  P25 "T"=12*  P26 "H"=13
+//                     P27 "O"=15* P28 "N"=4
+//   On-board:  P4=39 light  P5=0 button A  P6=16 buzzer  P7=17 pixels
+//              P10=36 sound  P11=2 button B  P19=22 SCL  P20=23 SDA (screen)
+//   * boot strapping pins: a sensor pull-up on P25 (GPIO12) can stop the
+//     board booting, so don't wire the sensor there.
 // ---------------------------------------------------------------------------
 constexpr int GPIO_P0 = 33;
 constexpr int GPIO_P1 = 32;
-constexpr int GPIO_P20 = 23;
 constexpr int GPIO_P23 = 27;
 constexpr int BUTTON_A_GPIO = 0;
 constexpr int BUTTON_B_GPIO = 2;
 
 // Set to a GPIO number to force a pin, or -1 to auto-detect at boot.
 constexpr int SENSOR_GPIO = -1;
-constexpr int SENSOR_SCAN_PINS[] = {GPIO_P1, GPIO_P23, GPIO_P0, GPIO_P20};
+constexpr int SENSOR_SCAN_PINS[] = {GPIO_P1, GPIO_P23, GPIO_P0};
 constexpr uint8_t SENSOR_TYPE = DHT11;  // DHT22 for the white AM2302 sensor
 
 // Thermostat
