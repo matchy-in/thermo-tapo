@@ -2,7 +2,11 @@
 
 #include <ArduinoJson.h>
 #include <WiFi.h>
+#if __has_include(<esp_random.h>)
 #include <esp_random.h>
+#else
+#include <esp_system.h>
+#endif
 #include <mbedtls/aes.h>
 #include <mbedtls/base64.h>
 #include <mbedtls/md.h>

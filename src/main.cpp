@@ -1,9 +1,17 @@
 #include <Arduino.h>
 #include <DHT.h>
-#include <U8g2lib.h>
 #include <WiFi.h>
 #include <Wire.h>
 #include <time.h>
+
+// The board vendor's MPython library (from Mind+) drives the on-board screen
+// reliably; U8g2 is only a fallback when it isn't installed.
+#if __has_include(<MPython.h>)
+#include <MPython.h>
+#define USE_MPYTHON_DISPLAY 1
+#else
+#include <U8g2lib.h>
+#endif
 #include <cmath>
 
 #if __has_include("secrets.h")
@@ -33,10 +41,12 @@ constexpr int BUTTON_B_GPIO = 2;
 constexpr int I2C_SCL_GPIO = 22;
 constexpr int I2C_SDA_GPIO = 23;
 
-// On-board 128x64 OLED. If the picture is shifted sideways or garbled, use the
-// SSD1306 line instead of the SH1106 one.
+#ifndef USE_MPYTHON_DISPLAY
+// Fallback driver for the 128x64 OLED. If the picture is shifted sideways or
+// garbled, use the SSD1306 line instead of the SH1106 one.
 U8G2_SH1106_128X64_NONAME_F_HW_I2C screen(U8G2_R0, U8X8_PIN_NONE, I2C_SCL_GPIO, I2C_SDA_GPIO);
 // U8G2_SSD1306_128X64_NONAME_F_HW_I2C screen(U8G2_R0, U8X8_PIN_NONE, I2C_SCL_GPIO, I2C_SDA_GPIO);
+#endif
 
 // Set to a GPIO number to force a pin, or -1 to auto-detect at boot.
 constexpr int SENSOR_GPIO = -1;
@@ -85,65 +95,91 @@ uint32_t lastScreenAt = 0;
 
 bool sensorRecent(uint32_t maxAgeMs) { return lastValidReadingAt != 0 && millis() - lastValidReadingAt < maxAgeMs; }
 
-void showBootMessage(const char* line1, const char* line2 = "") {
+// The screen shows 4 lines of up to 16 characters.
+String shownLines[4];
+
+void screenBegin() {
+#ifdef USE_MPYTHON_DISPLAY
+    mPython.begin();
+#else
+    Wire.begin(I2C_SDA_GPIO, I2C_SCL_GPIO);
+    Serial.print("[Screen] I2C devices found at:");
+    int found = 0;
+    for (uint8_t addr = 1; addr < 127; addr++) {
+        Wire.beginTransmission(addr);
+        if (Wire.endTransmission() == 0) {
+            Serial.printf(" 0x%02X", addr);
+            found++;
+        }
+    }
+    Serial.println(found ? "" : " none (screen not on GPIO 23/22?)");
+    screen.setBusClock(400000);
+    screen.begin();
+#endif
+}
+
+void showLines(const String lines[4], int highlightLine = -1) {
+#ifdef USE_MPYTHON_DISPLAY
+    (void)highlightLine;
+    // Only rewrite changed lines to avoid flicker.
+    for (int i = 0; i < 4; i++) {
+        if (lines[i] == shownLines[i]) continue;
+        display.fillInLine(i + 1, 0);
+        display.setCursorLine(i + 1);
+        display.printLine(lines[i]);
+        shownLines[i] = lines[i];
+    }
+#else
     screen.clearBuffer();
-    screen.setFont(u8g2_font_helvB10_tf);
-    screen.drawStr(0, 14, "Thermostat");
-    screen.drawHLine(0, 18, 128);
-    screen.setFont(u8g2_font_6x10_tf);
-    screen.drawStr(0, 34, line1);
-    screen.drawStr(0, 46, line2);
+    screen.setFont(u8g2_font_8x13_tf);
+    for (int i = 0; i < 4; i++) {
+        int baseline = 13 + i * 16;
+        if (i == highlightLine) {
+            screen.drawBox(0, baseline - 12, 128, 15);
+            screen.setDrawColor(0);
+        }
+        screen.drawStr(0, baseline, lines[i].c_str());
+        screen.setDrawColor(1);
+    }
     screen.sendBuffer();
+#endif
+}
+
+void showBootMessage(const char* line1, const char* line2 = "") {
+    String lines[4] = {"Thermostat", "", line1, line2};
+    showLines(lines);
 }
 
 void drawScreen() {
     char buf[32];
-    screen.clearBuffer();
-    screen.setFont(u8g2_font_6x10_tf);
+    String lines[4];
 
     struct tm now;
     if (getLocalTime(&now, 0)) {
-        strftime(buf, sizeof(buf), "%a %d %b  %H:%M:%S", &now);
+        strftime(buf, sizeof(buf), "%d/%m %H:%M:%S", &now);
+        lines[0] = buf;
     } else {
-        snprintf(buf, sizeof(buf), "Time: syncing...");
+        lines[0] = "Time: syncing";
     }
-    screen.drawStr(0, 9, buf);
-    screen.drawHLine(0, 12, 128);
 
     if (sensorRecent(10000)) {
-        screen.setFont(u8g2_font_helvB14_tf);
-        snprintf(buf, sizeof(buf), "%.1f\xC2\xB0" "C", lastTempC);
-        screen.drawUTF8(0, 31, buf);
-        screen.setFont(u8g2_font_6x10_tf);
-        snprintf(buf, sizeof(buf), "%.0f%% RH", lastHumidity);
-        screen.drawStr(128 - screen.getStrWidth(buf), 31, buf);
+        snprintf(buf, sizeof(buf), "T:%.1fC H:%.0f%%", lastTempC, lastHumidity);
+        lines[1] = buf;
     } else {
-        screen.drawStr(0, 28, "Sensor: no reading");
+        lines[1] = "Sensor: no data";
     }
 
-    const char* heater = plugState == 1 ? "Heater: ON" : plugState == 0 ? "Heater: OFF" : "Heater: ?";
-    const char* modeText = mode == Mode::Auto ? "AUTO" : "MANUAL";
-    if (plugState == 1) {
-        screen.drawBox(0, 35, 128, 11);
-        screen.setDrawColor(0);
-    }
-    screen.drawStr(2, 44, heater);
-    screen.drawStr(126 - screen.getStrWidth(modeText), 44, modeText);
-    screen.setDrawColor(1);
+    const char* heater = plugState == 1 ? "ON" : plugState == 0 ? "OFF" : "?";
+    snprintf(buf, sizeof(buf), "Heater: %-3s %s", heater, mode == Mode::Auto ? "AUTO" : "MAN");
+    lines[2] = buf;
 
-    if (WiFi.status() == WL_CONNECTED) {
-        snprintf(buf, sizeof(buf), "WiFi: OK %ddBm", WiFi.RSSI());
-    } else {
-        snprintf(buf, sizeof(buf), "WiFi: not connected");
-    }
-    screen.drawStr(0, 54, buf);
+    const char* tapoText = tapoState == TapoState::Ok           ? "OK"
+                           : tapoState == TapoState::Connecting ? "..."
+                                                                : "ERR";
+    snprintf(buf, sizeof(buf), "WiFi:%s Tapo:%s", WiFi.status() == WL_CONNECTED ? "OK" : "--", tapoText);
+    lines[3] = buf;
 
-    const char* tapoText = tapoState == TapoState::Ok           ? "Tapo: connected"
-                           : tapoState == TapoState::Connecting ? "Tapo: connecting..."
-                                                                : "Tapo: FAILED";
-    screen.drawStr(0, 63, tapoText);
-
-    screen.sendBuffer();
+    showLines(lines, plugState == 1 ? 2 : -1);
     lastScreenAt = millis();
 }
 
@@ -315,8 +351,7 @@ void printStatus() {
 
 void setup() {
     Serial.begin(115200);
-    screen.begin();
-    screen.setBusClock(400000);
+    screenBegin();
     showBootMessage("Starting...");
     delay(1500);
     Serial.println("\n\n=== MATRIXBIT THERMOSTAT BOOTING ===");
