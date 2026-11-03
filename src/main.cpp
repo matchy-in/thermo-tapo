@@ -54,6 +54,8 @@ constexpr uint32_t SENSOR_INTERVAL_MS = 2500;
 constexpr uint32_t STATUS_INTERVAL_MS = 5000;
 constexpr uint32_t PLUG_SYNC_INTERVAL_MS = 60UL * 1000;
 constexpr uint32_t TAPO_RETRY_MS = 30UL * 1000;
+constexpr uint32_t TAPO_RETRY_MAX_MS = 5UL * 60 * 1000;
+uint32_t tapoRetryMs = TAPO_RETRY_MS;
 constexpr uint32_t WIFI_RETRY_MS = 15UL * 1000;
 constexpr uint32_t SCREEN_INTERVAL_MS = 1000;
 
@@ -156,6 +158,8 @@ bool tapoConnect() {
         ok = state >= 0;
     }
     tapoState = ok ? TapoState::Ok : TapoState::Failed;
+    tapoRetryMs = ok ? TAPO_RETRY_MS : min(tapoRetryMs * 2, TAPO_RETRY_MAX_MS);
+    if (!ok) Serial.printf("[Tapo] Next attempt in %lu s\n", (unsigned long)(tapoRetryMs / 1000));
     drawScreen();
     return ok;
 }
@@ -272,7 +276,8 @@ void runThermostat() {
         mode = Mode::Auto;
         Serial.println("[Mode] Manual override expired, back to AUTO");
     }
-    if (mode != Mode::Auto) return;
+    // Reconnecting is left to the backoff in loop(); hammering a plug with logins can lock it out.
+    if (mode != Mode::Auto || !tapo.connected()) return;
 
     bool sensorFresh = lastValidReadingAt != 0 && now - lastValidReadingAt < SENSOR_FAILSAFE_MS;
     if (!sensorFresh) {
@@ -362,7 +367,7 @@ void loop() {
         runThermostat();
     }
 
-    if (!tapo.connected() && WiFi.status() == WL_CONNECTED && now - lastTapoAttemptAt >= TAPO_RETRY_MS) {
+    if (!tapo.connected() && WiFi.status() == WL_CONNECTED && now - lastTapoAttemptAt >= tapoRetryMs) {
         tapoConnect();
     }
 

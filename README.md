@@ -57,12 +57,25 @@ pio device monitor
 3. **Tools → Board → esp32 → ESP32 Dev Module**, then **Tools → Port** → the board's COM port.
    Leave the other Tools settings at their defaults.
 4. **Tools → Manage Libraries:** install **DHT sensor library** (Adafruit, accept *Adafruit Unified Sensor*
-   when asked) and **ArduinoJson** (by Benoit Blanchon, v7).
+   when asked), **ArduinoJson** (by Benoit Blanchon, v7) and **U8g2** (by oliver).
 5. Create a sketch folder named `matrixbit_thermostat`, copy `src/main.cpp` into it as
    `matrixbit_thermostat.ino`, and copy `tapo_client.h`, `tapo_client.cpp` and `secrets.h` next to it.
 6. Upload, then open **Tools → Serial Monitor** at **115200** baud.
 
-`MPython.h` is optional: the sketch builds without it.
+## On-board screen
+
+The 128x64 screen refreshes every second and shows:
+
+```text
+Tue 03 Nov  11:26:05
+15.8°C          45% RH
+Heater: ON        AUTO   <- highlighted while the heater is on
+WiFi: OK -61dBm
+Tapo: connected          (or "connecting..." / "FAILED")
+```
+
+During boot it shows each step (sensor scan, Wi-Fi, Tapo). If the picture is shifted sideways or garbled,
+switch the `U8G2_SH1106_...` line near the top of `src/main.cpp` to the commented `U8G2_SSD1306_...` line.
 
 ## Troubleshooting the Tapo connection
 

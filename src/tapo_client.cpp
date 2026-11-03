@@ -252,8 +252,11 @@ bool TapoClient::klapHandshake() {
         return false;
 
     if (status != 200 || resp.size() != 48) {
+        String hint = status == 401 ? " -> plug refused local login: check Third-Party Compatibility in the "
+                                      "Tapo app, power-cycle the plug, and confirm TAPO_IP is the plug"
+                                    : "";
         fail("KLAP handshake1: HTTP " + String(status) + ", " + String(resp.size()) +
-             " bytes (expected 48). Body: \"" + preview(resp) + "\"");
+             " bytes (expected 48). Body: \"" + preview(resp) + "\"" + hint);
         return false;
     }
 
