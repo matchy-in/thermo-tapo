@@ -51,9 +51,18 @@ pio device monitor
 
 ### Arduino IDE
 
-Install the libraries *DHT sensor library* (Adafruit) and *ArduinoJson* (v7). Create a sketch folder named
-`matrixbit_thermostat`, copy `src/main.cpp` into it as `matrixbit_thermostat.ino`, and copy `tapo_client.h`,
-`tapo_client.cpp` and `secrets.h` next to it. Use your board's ESP32 board definition.
+1. **File → Preferences → Additional boards manager URLs:**
+   `https://espressif.github.io/arduino-esp32/package_esp32_index.json`
+2. **Tools → Board → Boards Manager:** install **esp32 by Espressif Systems** (version 3.x).
+3. **Tools → Board → esp32 → ESP32 Dev Module**, then **Tools → Port** → the board's COM port.
+   Leave the other Tools settings at their defaults.
+4. **Tools → Manage Libraries:** install **DHT sensor library** (Adafruit, accept *Adafruit Unified Sensor*
+   when asked) and **ArduinoJson** (by Benoit Blanchon, v7).
+5. Create a sketch folder named `matrixbit_thermostat`, copy `src/main.cpp` into it as
+   `matrixbit_thermostat.ino`, and copy `tapo_client.h`, `tapo_client.cpp` and `secrets.h` next to it.
+6. Upload, then open **Tools → Serial Monitor** at **115200** baud.
+
+`MPython.h` is optional: the sketch builds without it.
 
 ## Troubleshooting the Tapo connection
 
