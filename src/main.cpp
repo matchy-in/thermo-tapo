@@ -1,13 +1,10 @@
 #include <Arduino.h>
 #include <DHT.h>
+#include <U8g2lib.h>
 #include <WiFi.h>
+#include <Wire.h>
 #include <time.h>
 #include <cmath>
-
-#if __has_include(<MPython.h>)
-#include <MPython.h>
-#define HAVE_MPYTHON 1
-#endif
 
 #if __has_include("secrets.h")
 #include "secrets.h"
@@ -33,6 +30,13 @@ constexpr int GPIO_P1 = 32;
 constexpr int GPIO_P23 = 27;
 constexpr int BUTTON_A_GPIO = 0;
 constexpr int BUTTON_B_GPIO = 2;
+constexpr int I2C_SCL_GPIO = 22;
+constexpr int I2C_SDA_GPIO = 23;
+
+// On-board 128x64 OLED. If the picture is shifted sideways or garbled, use the
+// SSD1306 line instead of the SH1106 one.
+U8G2_SH1106_128X64_NONAME_F_HW_I2C screen(U8G2_R0, U8X8_PIN_NONE, I2C_SCL_GPIO, I2C_SDA_GPIO);
+// U8G2_SSD1306_128X64_NONAME_F_HW_I2C screen(U8G2_R0, U8X8_PIN_NONE, I2C_SCL_GPIO, I2C_SDA_GPIO);
 
 // Set to a GPIO number to force a pin, or -1 to auto-detect at boot.
 constexpr int SENSOR_GPIO = -1;
@@ -51,6 +55,7 @@ constexpr uint32_t STATUS_INTERVAL_MS = 5000;
 constexpr uint32_t PLUG_SYNC_INTERVAL_MS = 60UL * 1000;
 constexpr uint32_t TAPO_RETRY_MS = 30UL * 1000;
 constexpr uint32_t WIFI_RETRY_MS = 15UL * 1000;
+constexpr uint32_t SCREEN_INTERVAL_MS = 1000;
 
 const char* NTP_SERVER = "uk.pool.ntp.org";
 const char* UK_TZ = "GMT0BST,M3.5.0/1,M10.5.0";
@@ -63,6 +68,9 @@ enum class Mode { Auto, Manual };
 Mode mode = Mode::Auto;
 int plugState = -1;  // -1 unknown, 0 off, 1 on
 
+enum class TapoState { Connecting, Ok, Failed };
+TapoState tapoState = TapoState::Connecting;
+
 float lastTempC = NAN;
 float lastHumidity = NAN;
 uint32_t lastValidReadingAt = 0;
@@ -71,6 +79,86 @@ bool everSwitched = false;
 uint32_t manualSince = 0;
 
 uint32_t lastSensorAt = 0, lastStatusAt = 0, lastSyncAt = 0, lastTapoAttemptAt = 0, lastWifiAttemptAt = 0;
+uint32_t lastScreenAt = 0;
+
+bool sensorRecent(uint32_t maxAgeMs) { return lastValidReadingAt != 0 && millis() - lastValidReadingAt < maxAgeMs; }
+
+void showBootMessage(const char* line1, const char* line2 = "") {
+    screen.clearBuffer();
+    screen.setFont(u8g2_font_helvB10_tf);
+    screen.drawStr(0, 14, "Thermostat");
+    screen.drawHLine(0, 18, 128);
+    screen.setFont(u8g2_font_6x10_tf);
+    screen.drawStr(0, 34, line1);
+    screen.drawStr(0, 46, line2);
+    screen.sendBuffer();
+}
+
+void drawScreen() {
+    char buf[32];
+    screen.clearBuffer();
+    screen.setFont(u8g2_font_6x10_tf);
+
+    struct tm now;
+    if (getLocalTime(&now, 0)) {
+        strftime(buf, sizeof(buf), "%a %d %b  %H:%M:%S", &now);
+    } else {
+        snprintf(buf, sizeof(buf), "Time: syncing...");
+    }
+    screen.drawStr(0, 9, buf);
+    screen.drawHLine(0, 12, 128);
+
+    if (sensorRecent(10000)) {
+        screen.setFont(u8g2_font_helvB14_tf);
+        snprintf(buf, sizeof(buf), "%.1f\xC2\xB0" "C", lastTempC);
+        screen.drawUTF8(0, 31, buf);
+        screen.setFont(u8g2_font_6x10_tf);
+        snprintf(buf, sizeof(buf), "%.0f%% RH", lastHumidity);
+        screen.drawStr(128 - screen.getStrWidth(buf), 31, buf);
+    } else {
+        screen.drawStr(0, 28, "Sensor: no reading");
+    }
+
+    const char* heater = plugState == 1 ? "Heater: ON" : plugState == 0 ? "Heater: OFF" : "Heater: ?";
+    const char* modeText = mode == Mode::Auto ? "AUTO" : "MANUAL";
+    if (plugState == 1) {
+        screen.drawBox(0, 35, 128, 11);
+        screen.setDrawColor(0);
+    }
+    screen.drawStr(2, 44, heater);
+    screen.drawStr(126 - screen.getStrWidth(modeText), 44, modeText);
+    screen.setDrawColor(1);
+
+    if (WiFi.status() == WL_CONNECTED) {
+        snprintf(buf, sizeof(buf), "WiFi: OK %ddBm", WiFi.RSSI());
+    } else {
+        snprintf(buf, sizeof(buf), "WiFi: not connected");
+    }
+    screen.drawStr(0, 54, buf);
+
+    const char* tapoText = tapoState == TapoState::Ok           ? "Tapo: connected"
+                           : tapoState == TapoState::Connecting ? "Tapo: connecting..."
+                                                                : "Tapo: FAILED";
+    screen.drawStr(0, 63, tapoText);
+
+    screen.sendBuffer();
+    lastScreenAt = millis();
+}
+
+bool tapoConnect() {
+    tapoState = TapoState::Connecting;
+    drawScreen();
+    lastTapoAttemptAt = millis();
+    bool ok = tapo.connect();
+    if (ok) {
+        int state = tapo.getPower();
+        if (state >= 0) plugState = state;
+        ok = state >= 0;
+    }
+    tapoState = ok ? TapoState::Ok : TapoState::Failed;
+    drawScreen();
+    return ok;
+}
 
 struct Button {
     int pin;
@@ -155,11 +243,15 @@ bool setHeater(bool on, const char* reason) {
     lastTapoAttemptAt = millis();
     if (!tapo.setPower(on)) {
         Serial.println("[Heater] Command failed: " + tapo.lastError());
+        tapoState = TapoState::Failed;
+        drawScreen();
         return false;
     }
+    tapoState = TapoState::Ok;
     plugState = on ? 1 : 0;
     lastSwitchAt = millis();
     everSwitched = true;
+    drawScreen();
     return true;
 }
 
@@ -217,25 +309,28 @@ void printStatus() {
 }
 
 void setup() {
-#ifdef HAVE_MPYTHON
-    mPython.begin();
-#endif
     Serial.begin(115200);
+    screen.begin();
+    screen.setBusClock(400000);
+    showBootMessage("Starting...");
     delay(1500);
     Serial.println("\n\n=== MATRIXBIT THERMOSTAT BOOTING ===");
 
     pinMode(BUTTON_A_GPIO, INPUT_PULLUP);
     pinMode(BUTTON_B_GPIO, INPUT_PULLUP);
 
+    showBootMessage("Looking for sensor...");
     setupSensor();
+    showBootMessage("Connecting to WiFi:", WIFI_SSID);
     connectWifi();
 
     tapo.begin(TAPO_IP, TAPO_EMAIL, TAPO_PASSWORD);
     Serial.printf("[Tapo] Connecting to plug at %s\n", TAPO_IP);
-    lastTapoAttemptAt = millis();
-    if (tapo.connect()) {
-        plugState = tapo.getPower();
+    if (WiFi.status() == WL_CONNECTED && tapoConnect()) {
         Serial.printf("[Tapo] Connected via %s, plug is %s\n", tapo.protocolName(), plugText());
+    } else {
+        tapoState = TapoState::Failed;
+        lastTapoAttemptAt = millis();
     }
     lastSyncAt = millis();
     Serial.println("=== SETUP COMPLETE ===\n");
@@ -268,8 +363,7 @@ void loop() {
     }
 
     if (!tapo.connected() && WiFi.status() == WL_CONNECTED && now - lastTapoAttemptAt >= TAPO_RETRY_MS) {
-        lastTapoAttemptAt = now;
-        if (tapo.connect()) plugState = tapo.getPower();
+        tapoConnect();
     }
 
     // Picks up changes made from the Tapo app or the plug's own button.
@@ -277,12 +371,15 @@ void loop() {
         lastSyncAt = now;
         int state = tapo.getPower();
         if (state >= 0) plugState = state;
+        tapoState = state >= 0 ? TapoState::Ok : TapoState::Failed;
     }
 
     if (now - lastStatusAt >= STATUS_INTERVAL_MS) {
         lastStatusAt = now;
         printStatus();
     }
+
+    if (millis() - lastScreenAt >= SCREEN_INTERVAL_MS) drawScreen();
 
     delay(10);
 }
