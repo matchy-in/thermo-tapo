@@ -1,7 +1,6 @@
 #include "tapo_client.h"
 
 #include <ArduinoJson.h>
-#include <HTTPClient.h>
 #include <WiFi.h>
 #include <esp_random.h>
 #include <mbedtls/aes.h>
@@ -127,19 +126,49 @@ String preview(const std::vector<uint8_t>& body) {
     return s;
 }
 
-class VectorStream : public Stream {
-public:
-    explicit VectorStream(std::vector<uint8_t>& v) : v_(v) {}
-    size_t write(uint8_t b) override { v_.push_back(b); return 1; }
-    size_t write(const uint8_t* b, size_t n) override { v_.insert(v_.end(), b, b + n); return n; }
-    int available() override { return 0; }
-    int read() override { return -1; }
-    int peek() override { return -1; }
-    void flush() override {}
+bool before(uint32_t deadline) { return static_cast<int32_t>(deadline - millis()) > 0; }
 
-private:
-    std::vector<uint8_t>& v_;
-};
+bool readLine(WiFiClient& c, String& line, uint32_t deadline) {
+    line = "";
+    while (before(deadline)) {
+        if (c.available()) {
+            char ch = static_cast<char>(c.read());
+            if (ch == '\n') {
+                if (line.endsWith("\r")) line.remove(line.length() - 1);
+                return true;
+            }
+            line += ch;
+            if (line.length() > 2048) return false;
+        } else if (!c.connected()) {
+            return line.length() > 0;
+        } else {
+            delay(1);
+        }
+    }
+    return false;
+}
+
+// Reads exactly n bytes, or until the connection closes when n is SIZE_MAX.
+bool readBytes(WiFiClient& c, std::vector<uint8_t>& out, size_t n, uint32_t deadline) {
+    uint8_t buf[256];
+    size_t got = 0;
+    while (got < n && before(deadline)) {
+        int avail = c.available();
+        if (avail > 0) {
+            size_t want = std::min(static_cast<size_t>(avail), std::min(sizeof(buf), n - got));
+            int r = c.read(buf, want);
+            if (r > 0) {
+                out.insert(out.end(), buf, buf + r);
+                got += r;
+            }
+        } else if (!c.connected()) {
+            return n == SIZE_MAX;
+        } else {
+            delay(1);
+        }
+    }
+    return got == n || n == SIZE_MAX;
+}
 
 uint64_t nowMillis() {
     time_t t = time(nullptr);
@@ -206,37 +235,75 @@ bool TapoClient::connect() {
 
 bool TapoClient::post(const String& path, const uint8_t* body, size_t len, const char* contentType,
                       bool captureCookie, int& status, std::vector<uint8_t>& out) {
+    // Hand-rolled HTTP: the plug sends TP_SESSIONID and TIMEOUT cookies, and only
+    // TP_SESSIONID may be sent back. HTTPClient keeps just one Set-Cookie header.
     out.clear();
+    status = 0;
     WiFiClient client;
-    HTTPClient http;
-    http.setConnectTimeout(kHttpTimeoutMs);
-    http.setTimeout(kHttpTimeoutMs);
-    http.setReuse(false);
-    if (!http.begin(client, "http://" + ip_ + path)) {
-        fail("bad URL");
+    if (!client.connect(ip_.c_str(), 80, kHttpTimeoutMs)) {
+        fail("cannot reach plug at " + ip_ + ":80");
         return false;
     }
-    http.addHeader("Content-Type", contentType);
-    http.addHeader("Accept", "*/*");
-    if (cookie_.length()) http.addHeader("Cookie", cookie_);
-    const char* headerKeys[] = {"Set-Cookie"};
-    http.collectHeaders(headerKeys, 1);
 
-    status = http.POST(const_cast<uint8_t*>(body), len);
-    if (status <= 0) {
-        fail("HTTP " + path + " failed: " + HTTPClient::errorToString(status));
-        http.end();
+    String head = "POST " + path + " HTTP/1.1\r\nHost: " + ip_ + "\r\nContent-Type: " + contentType +
+                  "\r\nAccept: */*\r\nContent-Length: " + String(len) + "\r\nConnection: close\r\n";
+    if (cookie_.length()) head += "Cookie: " + cookie_ + "\r\n";
+    head += "\r\n";
+    client.write(reinterpret_cast<const uint8_t*>(head.c_str()), head.length());
+    if (len) client.write(body, len);
+
+    uint32_t deadline = millis() + kHttpTimeoutMs;
+    String line;
+    if (!readLine(client, line, deadline) || !line.startsWith("HTTP/")) {
+        fail("no HTTP response from plug for " + path);
+        client.stop();
         return false;
     }
-    if (captureCookie && http.hasHeader("Set-Cookie")) {
-        String c = http.header("Set-Cookie");
-        int semi = c.indexOf(';');
-        cookie_ = semi >= 0 ? c.substring(0, semi) : c;
+    status = line.substring(line.indexOf(' ') + 1).toInt();
+
+    long contentLength = -1;
+    bool chunked = false;
+    while (readLine(client, line, deadline) && line.length()) {
+        int colon = line.indexOf(':');
+        if (colon < 0) continue;
+        String name = line.substring(0, colon);
+        name.trim();
+        name.toLowerCase();
+        String value = line.substring(colon + 1);
+        value.trim();
+        if (name == "content-length") {
+            contentLength = value.toInt();
+        } else if (name == "transfer-encoding") {
+            value.toLowerCase();
+            chunked = value.indexOf("chunked") >= 0;
+        } else if (name == "set-cookie" && captureCookie) {
+            int start = 0;
+            while (start < static_cast<int>(value.length())) {
+                int end = value.indexOf(';', start);
+                if (end < 0) end = value.length();
+                String part = value.substring(start, end);
+                part.trim();
+                if (part.startsWith("TP_SESSIONID=")) cookie_ = part;
+                start = end + 1;
+            }
+        }
     }
-    VectorStream sink(out);
-    http.writeToStream(&sink);
-    http.end();
-    return true;
+
+    bool ok = true;
+    if (chunked) {
+        while (ok && readLine(client, line, deadline)) {
+            size_t size = strtoul(line.c_str(), nullptr, 16);
+            if (size == 0) break;
+            ok = readBytes(client, out, size, deadline) && readLine(client, line, deadline);
+        }
+    } else if (contentLength > 0) {
+        ok = readBytes(client, out, static_cast<size_t>(contentLength), deadline);
+    } else if (contentLength < 0) {
+        readBytes(client, out, SIZE_MAX, deadline);
+    }
+    client.stop();
+    if (!ok) fail("timed out reading reply for " + path);
+    return ok;
 }
 
 // ---------------------------------------------------------------- KLAP
@@ -259,6 +326,8 @@ bool TapoClient::klapHandshake() {
              " bytes (expected 48). Body: \"" + preview(resp) + "\"" + hint);
         return false;
     }
+
+    if (cookie_.length() == 0) Serial.println("[Tapo] Warning: plug sent no TP_SESSIONID cookie");
 
     const uint8_t* remoteSeed = resp.data();
     const uint8_t* serverHash = resp.data() + 16;
