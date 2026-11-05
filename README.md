@@ -64,18 +64,50 @@ pio device monitor
 
 ## On-board screen
 
-The 128x64 screen refreshes every second and shows:
+The screen refreshes every second and shows:
 
 ```text
-Tue 03 Nov  11:26:05
-15.8°C          45% RH
-Heater: ON        AUTO   <- highlighted while the heater is on
-WiFi: OK -61dBm
-Tapo: connected          (or "connecting..." / "FAILED")
+03/11 11:26:05
+T:15.8C H:45%
+Heater: ON  AUTO     (MAN = manual override from button B)
+WiFi:OK Tapo:OK      (Tapo:... = connecting, Tapo:ERR = failed)
 ```
 
-During boot it shows each step (sensor scan, Wi-Fi, Tapo). If the picture is shifted sideways or garbled,
-switch the `U8G2_SH1106_...` line near the top of `src/main.cpp` to the commented `U8G2_SSD1306_...` line.
+During boot it shows each step (sensor scan, Wi-Fi, Tapo).
+
+The screen is driven by the board vendor's **MPython** library (the one Mind+ uses) whenever `MPython.h` is
+installed. To use it from Arduino IDE, search the Mind+ install folder for `MPython.h` and copy the library
+folder that contains it into `Documents\Arduino\libraries`.
+
+Without MPython the sketch falls back to the U8g2 library and prints `[Screen] I2C devices found at: ...` on the
+Serial Monitor. If the picture is shifted sideways or garbled, switch the `U8G2_SH1106_...` line near the top
+of `src/main.cpp` to the commented `U8G2_SSD1306_...` line.
+
+## Testing
+
+**Plug protocol, without hardware** (Linux/WSL; needs `g++`, `libmbedtls-dev`, `pip install python-kasa`, and one
+`pio run` first). This compiles the real `src/tapo_client.cpp` for the PC and runs it against `test/host/mock_plug.py`, a
+fake plug built on python-kasa's reference KLAP code:
+
+```bash
+test/host/run.sh
+```
+
+**Your real plug, without the board**, from any PC on the same Wi-Fi:
+
+```bash
+pip install python-kasa
+python tools/check_plug.py 192.168.0.106 you@example.com "your password" --toggle
+```
+
+**On the board**, type these into the Serial Monitor (115200 baud, "New Line" line ending):
+
+| Command | What it does |
+|---|---|
+| `tapo` | Reconnects to the plug and prints `[Test] PASS` or `[Test] FAIL: <reason>` |
+| `on` / `off` | Switches the plug (manual mode) and prints PASS/FAIL |
+| `auto` | Returns to thermostat control |
+| `status` | Prints time, sensor, plug and Wi-Fi status |
 
 ## Troubleshooting the Tapo connection
 

@@ -375,10 +375,49 @@ void setup() {
     lastSyncAt = millis();
     Serial.println("=== SETUP COMPLETE ===\n");
     Serial.println("Button B: toggle heater (manual for 30 min). Button A: back to AUTO.");
+    Serial.println("Serial Monitor commands: on, off, auto, status, tapo");
+}
+
+void runCommand(String cmd) {
+    cmd.trim();
+    cmd.toLowerCase();
+    if (cmd == "on" || cmd == "off") {
+        mode = Mode::Manual;
+        manualSince = millis();
+        bool ok = setHeater(cmd == "on", "serial command");
+        Serial.println(ok ? "[Test] PASS: plug switched" : "[Test] FAIL: " + tapo.lastError());
+    } else if (cmd == "auto") {
+        mode = Mode::Auto;
+        Serial.println("[Mode] Back to AUTO");
+    } else if (cmd == "status") {
+        printStatus();
+    } else if (cmd == "tapo") {
+        tapo.disconnect();
+        bool ok = tapoConnect();
+        Serial.println(ok ? String("[Test] PASS: connected via ") + tapo.protocolName() + ", plug is " + plugText()
+                          : "[Test] FAIL: " + tapo.lastError());
+    } else {
+        Serial.println("Commands: on, off, auto, status, tapo");
+    }
+}
+
+void readSerialCommands() {
+    static String line;
+    while (Serial.available()) {
+        char c = static_cast<char>(Serial.read());
+        if (c == '\n' || c == '\r') {
+            if (line.length()) runCommand(line);
+            line = "";
+        } else if (line.length() < 32) {
+            line += c;
+        }
+    }
 }
 
 void loop() {
     uint32_t now = millis();
+
+    readSerialCommands();
 
     if (buttonB.pressed()) {
         mode = Mode::Manual;
