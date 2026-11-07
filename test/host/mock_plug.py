@@ -4,6 +4,8 @@ Behaves like real firmware in the ways that have bitten this project:
 - handshake1 sets both a TP_SESSIONID and a TIMEOUT cookie
 - requests are rejected with 403 unless exactly the session cookie is sent back
 - the session can be made to expire after N requests (403 -> client must re-handshake)
+- optionally, a session only works on the TCP connection that did handshake1
+- optionally, the plug closes the connection after every reply
 """
 
 import argparse
@@ -22,10 +24,12 @@ pack = struct.Struct(">l").pack
 
 
 class Plug:
-    def __init__(self, email, password, cookie_style, expire_after):
+    def __init__(self, email, password, cookie_style, expire_after, bind_to_connection, close_each):
         self.auth = KlapTransportV2.generate_auth_hash(Credentials(email, password))
         self.cookie_style = cookie_style
         self.expire_after = expire_after
+        self.bind_to_connection = bind_to_connection
+        self.close_each = close_each
         self.device_on = False
         self.sessions = {}  # sid -> dict(local, remote, verified, session, count)
 
@@ -42,6 +46,9 @@ class Handler(BaseHTTPRequestHandler):
         for c in cookies:
             self.send_header("Set-Cookie", c)
         self.send_header("Content-Length", str(len(body)))
+        if self.plug.close_each:
+            self.send_header("Connection", "close")
+            self.close_connection = True
         self.end_headers()
         self.wfile.write(body)
 
@@ -51,9 +58,15 @@ class Handler(BaseHTTPRequestHandler):
         if len(parts) != 1 or not parts[0].startswith("TP_SESSIONID="):
             self.log_message("rejecting Cookie header %r", raw)
             return None
-        return self.plug.sessions.get(parts[0].split("=", 1)[1])
+        s = self.plug.sessions.get(parts[0].split("=", 1)[1])
+        if s and self.plug.bind_to_connection and s["conn"] != self.client_address:
+            self.log_message("session used from a different TCP connection")
+            return None
+        return s
 
     def do_POST(self):
+        if os.environ.get("MOCK_TRACE"):
+            print("[trace]", self.client_address, self.command, self.path, dict(self.headers), flush=True)
         url = urlparse(self.path)
         body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
         plug = self.plug
@@ -61,7 +74,9 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/app/handshake1":
             local, remote = body, secrets.token_bytes(16)
             sid = secrets.token_hex(16).upper()
-            plug.sessions[sid] = dict(local=local, remote=remote, verified=False, count=0)
+            plug.sessions[sid] = dict(
+                local=local, remote=remote, verified=False, count=0, conn=self.client_address
+            )
             server_hash = hashlib.sha256(local + remote + plug.auth).digest()
             if plug.cookie_style == "separate":
                 cookies = [f"TP_SESSIONID={sid}", "TIMEOUT=86400"]
@@ -117,8 +132,12 @@ def main():
     ap.add_argument("--password", default="secret")
     ap.add_argument("--cookie-style", choices=["combined", "separate", "timeout-first"], default="combined")
     ap.add_argument("--expire-after", type=int, default=0)
+    ap.add_argument("--bind-to-connection", action="store_true")
+    ap.add_argument("--close-each", action="store_true")
     args = ap.parse_args()
-    Handler.plug = Plug(args.email, args.password, args.cookie_style, args.expire_after)
+    Handler.plug = Plug(
+        args.email, args.password, args.cookie_style, args.expire_after, args.bind_to_connection, args.close_each
+    )
     ThreadingHTTPServer(("127.0.0.1", args.port), Handler).serve_forever()
 
 

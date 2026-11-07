@@ -201,6 +201,7 @@ void TapoClient::begin(const char* ip, const char* email, const char* password) 
 }
 
 void TapoClient::disconnect() {
+    conn_.stop();
     protocol_ = Protocol::None;
     cookie_ = "";
     token_ = "";
@@ -241,87 +242,101 @@ bool TapoClient::post(const String& path, const uint8_t* body, size_t len, const
                       bool captureCookie, int& status, std::vector<uint8_t>& out) {
     // Hand-rolled HTTP: the plug sends TP_SESSIONID and TIMEOUT cookies, and only
     // TP_SESSIONID may be sent back. HTTPClient keeps just one Set-Cookie header.
-    out.clear();
-    status = 0;
-    WiFiClient client;
-    if (!client.connect(ip_.c_str(), 80, kHttpTimeoutMs)) {
-        fail("cannot reach plug at " + ip_ + ":80");
-        return false;
-    }
-
     String head = "POST " + path + " HTTP/1.1\r\nHost: " + ip_ + "\r\nContent-Type: " + contentType +
-                  "\r\nAccept: */*\r\nContent-Length: " + String(len) + "\r\nConnection: close\r\n";
+                  "\r\nAccept: */*\r\nContent-Length: " + String(len) + "\r\nConnection: keep-alive\r\n";
     if (cookie_.length()) head += "Cookie: " + cookie_ + "\r\n";
     head += "\r\n";
     // One write: the plug's HTTP server can answer 403 if the body arrives in a
     // separate TCP segment from the headers.
     std::vector<uint8_t> request(head.c_str(), head.c_str() + head.length());
     request.insert(request.end(), body, body + len);
-    client.setNoDelay(true);
-    size_t sent = client.write(request.data(), request.size());
-    if (sent != request.size()) {
-        fail("sent only " + String(sent) + " of " + String(request.size()) + " bytes to " + path);
-        client.stop();
-        return false;
-    }
 
-    uint32_t deadline = millis() + kHttpTimeoutMs;
-    String line;
-    if (!readLine(client, line, deadline) || !line.startsWith("HTTP/")) {
-        fail("no HTTP response from plug for " + path);
-        client.stop();
-        return false;
-    }
-    status = line.substring(line.indexOf(' ') + 1).toInt();
+    // A kept-alive connection may have been closed by the plug in the meantime;
+    // in that case retry once on a fresh connection.
+    for (int attempt = 0; attempt < 2; attempt++) {
+        out.clear();
+        status = 0;
+        bool reused = conn_.connected();
+        if (!reused) {
+            conn_.stop();
+            if (!conn_.connect(ip_.c_str(), 80, kHttpTimeoutMs)) {
+                fail("cannot reach plug at " + ip_ + ":80");
+                return false;
+            }
+            conn_.setNoDelay(true);
+        }
 
-    long contentLength = -1;
-    bool chunked = false;
-    while (readLine(client, line, deadline) && line.length()) {
-        int colon = line.indexOf(':');
-        if (colon < 0) continue;
-        String name = line.substring(0, colon);
-        name.trim();
-        name.toLowerCase();
-        String value = line.substring(colon + 1);
-        value.trim();
-        if (name == "content-length") {
-            contentLength = value.toInt();
-        } else if (name == "transfer-encoding") {
-            value.toLowerCase();
-            chunked = value.indexOf("chunked") >= 0;
-        } else if (name == "set-cookie" && captureCookie) {
-            int start = 0;
-            while (start < static_cast<int>(value.length())) {
-                int end = value.indexOf(';', start);
-                if (end < 0) end = value.length();
-                String part = value.substring(start, end);
-                part.trim();
-                if (part.startsWith("TP_SESSIONID=")) cookie_ = part;
-                start = end + 1;
+        size_t sent = conn_.write(request.data(), request.size());
+        uint32_t deadline = millis() + kHttpTimeoutMs;
+        String line;
+        if (sent != request.size() || !readLine(conn_, line, deadline) || !line.startsWith("HTTP/")) {
+            conn_.stop();
+            if (reused) continue;
+            fail("no HTTP response from plug for " + path);
+            return false;
+        }
+        status = line.substring(line.indexOf(' ') + 1).toInt();
+
+        long contentLength = -1;
+        bool chunked = false;
+        bool closeAfter = false;
+        while (readLine(conn_, line, deadline) && line.length()) {
+            int colon = line.indexOf(':');
+            if (colon < 0) continue;
+            String name = line.substring(0, colon);
+            name.trim();
+            name.toLowerCase();
+            String value = line.substring(colon + 1);
+            value.trim();
+            if (name == "content-length") {
+                contentLength = value.toInt();
+            } else if (name == "transfer-encoding") {
+                value.toLowerCase();
+                chunked = value.indexOf("chunked") >= 0;
+            } else if (name == "connection") {
+                value.toLowerCase();
+                closeAfter = value.indexOf("close") >= 0;
+            } else if (name == "set-cookie" && captureCookie) {
+                int start = 0;
+                while (start < static_cast<int>(value.length())) {
+                    int end = value.indexOf(';', start);
+                    if (end < 0) end = value.length();
+                    String part = value.substring(start, end);
+                    part.trim();
+                    if (part.startsWith("TP_SESSIONID=")) cookie_ = part;
+                    start = end + 1;
+                }
             }
         }
-    }
 
-    bool ok = true;
-    if (chunked) {
-        while (ok && readLine(client, line, deadline)) {
-            size_t size = strtoul(line.c_str(), nullptr, 16);
-            if (size == 0) break;
-            ok = readBytes(client, out, size, deadline) && readLine(client, line, deadline);
+        bool ok = true;
+        if (chunked) {
+            while (ok && readLine(conn_, line, deadline)) {
+                size_t size = strtoul(line.c_str(), nullptr, 16);
+                if (size == 0) {
+                    readLine(conn_, line, deadline);
+                    break;
+                }
+                ok = readBytes(conn_, out, size, deadline) && readLine(conn_, line, deadline);
+            }
+        } else if (contentLength > 0) {
+            ok = readBytes(conn_, out, static_cast<size_t>(contentLength), deadline);
+        } else if (contentLength < 0) {
+            readBytes(conn_, out, SIZE_MAX, deadline);
+            closeAfter = true;
         }
-    } else if (contentLength > 0) {
-        ok = readBytes(client, out, static_cast<size_t>(contentLength), deadline);
-    } else if (contentLength < 0) {
-        readBytes(client, out, SIZE_MAX, deadline);
+        if (closeAfter || !ok) conn_.stop();
+        if (!ok) fail("timed out reading reply for " + path);
+        return ok;
     }
-    client.stop();
-    if (!ok) fail("timed out reading reply for " + path);
-    return ok;
+    fail("plug closed the connection for " + path);
+    return false;
 }
 
 // ---------------------------------------------------------------- KLAP
 
 bool TapoClient::klapHandshake() {
+    conn_.stop();
     cookie_ = "";
     uint8_t localSeed[16];
     esp_fill_random(localSeed, sizeof(localSeed));
@@ -443,6 +458,7 @@ bool TapoClient::ensureRsaKey() {
 }
 
 bool TapoClient::passthroughHandshake() {
+    conn_.stop();
     cookie_ = "";
     token_ = "";
     if (!ensureRsaKey()) return false;

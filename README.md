@@ -6,7 +6,8 @@ Tapo smart plug (with your heater plugged into it) over your local Wi-Fi:
 - Heater **on** when the temperature is at or below **16.0 °C**.
 - Heater **off** again at or above **18.0 °C**. The 2 °C gap stops the plug clicking on and off around 16 °C.
 - At least 60 s between automatic switches. If the sensor stops responding for 2 minutes, the heater is turned off as a safety measure.
-- **Button B** toggles the heater by hand and pauses automatic control for 30 minutes. **Button A** switches back to automatic control right away.
+- **Button A** switches the heater on/off by hand (and puts the thermostat in MANUAL so it doesn't undo it).
+- **Button B** switches between AUTO and MANUAL. MANUAL returns to AUTO by itself after 30 minutes (`MANUAL_OVERRIDE_MS`).
 - Every 60 s it reads the plug's real state, so changes made in the Tapo app or with the plug's own button are picked up.
 
 ## Wiring
@@ -69,7 +70,7 @@ The screen refreshes every second and shows:
 ```text
 03/11 11:26:05
 T:15.8C H:45%
-Heater: ON  AUTO     (MAN = manual override from button B)
+Heater: ON  AUTO     (MAN = manual mode, see buttons above)
 WiFi:OK Tapo:OK      (Tapo:... = connecting, Tapo:ERR = failed)
 ```
 

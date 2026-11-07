@@ -370,7 +370,8 @@ void setup() {
     }
     lastSyncAt = millis();
     Serial.println("=== SETUP COMPLETE ===\n");
-    Serial.println("Button B: toggle heater (manual for 30 min). Button A: back to AUTO.");
+    Serial.println("Button A: heater on/off (switches to MANUAL). Button B: AUTO <-> MANUAL.");
+    Serial.println("MANUAL returns to AUTO by itself after 30 minutes.");
     Serial.println("Serial Monitor commands: on, off, auto, status, tapo, screen");
 }
 
@@ -421,14 +422,18 @@ void loop() {
 
     readSerialCommands();
 
-    if (buttonB.pressed()) {
+    // Button A toggles the heater; doing so switches to MANUAL so the thermostat
+    // doesn't immediately undo it.
+    if (buttonA.pressed()) {
         mode = Mode::Manual;
         manualSince = now;
-        setHeater(plugState != 1, "button B");
+        setHeater(plugState != 1, "button A");
     }
-    if (buttonA.pressed() && mode != Mode::Auto) {
-        mode = Mode::Auto;
-        Serial.println("[Mode] Back to AUTO");
+    if (buttonB.pressed()) {
+        mode = mode == Mode::Auto ? Mode::Manual : Mode::Auto;
+        manualSince = now;
+        Serial.printf("[Mode] Button B: %s\n", mode == Mode::Auto ? "AUTO" : "MANUAL");
+        drawScreen();
     }
 
     if (WiFi.status() != WL_CONNECTED && now - lastWifiAttemptAt >= WIFI_RETRY_MS) {

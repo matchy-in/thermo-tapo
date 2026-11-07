@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include <WiFi.h>
 #include <vector>
 
 // Minimal local-LAN client for Tapo smart plugs (P100 / P105 / P110 / P115 ...).
@@ -40,6 +41,9 @@ private:
               bool captureCookie, int& status, std::vector<uint8_t>& out);
     void fail(const String& message);
 
+    // Kept open across handshake and requests: the plug ties a KLAP session to
+    // the TCP connection it was created on.
+    WiFiClient conn_;
     String ip_, email_, password_;
     String cookie_, token_, lastError_;
     Protocol protocol_ = Protocol::None;

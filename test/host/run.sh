@@ -30,6 +30,7 @@ run() {
     echo "=== $name"
     if "$BUILD"/klap_test user@example.com "$password" "$expect" > "$BUILD/test.log" 2>&1; then
         grep -E "^(PASS|FAIL)" "$BUILD/test.log"
+        if [ -n "${MOCK_TRACE:-}" ]; then grep trace "$BUILD/mock.log" || true; fi
     else
         cat "$BUILD/test.log"; echo "--- mock log"; cat "$BUILD/mock.log"; status=1
     fi
@@ -40,5 +41,7 @@ run "cookie as one header"          ok        secret --cookie-style combined
 run "cookies as separate headers"   ok        secret --cookie-style separate
 run "TIMEOUT cookie listed first"   ok        secret --cookie-style timeout-first
 run "session expires mid-run"       ok        secret --expire-after 3
+run "session tied to TCP connection" ok        secret --bind-to-connection
+run "plug closes every connection"  ok        secret --close-each
 run "wrong password"                auth-fail wrong
 exit $status
