@@ -392,6 +392,14 @@ bool TapoClient::klapHandshake() {
         return false;
     }
 
+    klapDerive(localSeed, remoteSeed, auth);
+
+    protocol_ = Protocol::Klap;
+    Serial.println("[Tapo] KLAP session established.");
+    return true;
+}
+
+void TapoClient::klapDerive(const uint8_t localSeed[16], const uint8_t remoteSeed[16], const uint8_t auth[32]) {
     uint8_t k[32];
     sha256({str("lsk"), {localSeed, 16}, {remoteSeed, 16}, {auth, 32}}, k);
     memcpy(klapKey_, k, 16);
@@ -401,18 +409,13 @@ bool TapoClient::klapHandshake() {
                                     (uint32_t(k[30]) << 8) | uint32_t(k[31]));
     sha256({str("ldk"), {localSeed, 16}, {remoteSeed, 16}, {auth, 32}}, k);
     memcpy(klapSig_, k, 28);
-
-    protocol_ = Protocol::Klap;
-    Serial.println("[Tapo] KLAP session established.");
-    return true;
 }
 
-bool TapoClient::klapRequest(const String& json, String& response) {
+std::vector<uint8_t> TapoClient::klapEncrypt(const String& json, uint8_t iv[16]) {
     klapSeq_ = static_cast<int32_t>(static_cast<uint32_t>(klapSeq_) + 1);
     uint8_t seqBytes[4] = {
         uint8_t(uint32_t(klapSeq_) >> 24), uint8_t(uint32_t(klapSeq_) >> 16),
         uint8_t(uint32_t(klapSeq_) >> 8), uint8_t(uint32_t(klapSeq_))};
-    uint8_t iv[16];
     memcpy(iv, klapIvBase_, 12);
     memcpy(iv + 12, seqBytes, 4);
 
@@ -423,6 +426,35 @@ bool TapoClient::klapRequest(const String& json, String& response) {
 
     std::vector<uint8_t> body(sig, sig + 32);
     body.insert(body.end(), cipher.begin(), cipher.end());
+    return body;
+}
+
+bool TapoClient::selfTest() {
+    // Reference values from python-kasa: user@example.com / secret, local seed
+    // 00..0f, remote seed 10..1f, payload {"method":"get_device_info"}.
+    const char* expectedHash = "d6e660d5831bcd110b97fffe9d3e4df595f584186541e40848dda06c047e3ee8";
+    const int32_t expectedSeq = -903964343;
+    uint8_t local[16], remote[16], auth[32], iv[16], h[32];
+    for (int i = 0; i < 16; i++) {
+        local[i] = i;
+        remote[i] = 16 + i;
+    }
+    disconnect();
+    klapAuthHash("user@example.com", "secret", auth);
+    klapDerive(local, remote, auth);
+    std::vector<uint8_t> body = klapEncrypt("{\"method\":\"get_device_info\"}", iv);
+    sha256({{body.data(), body.size()}}, h);
+    String got = toHex(h, 32);
+    bool ok = got == expectedHash && klapSeq_ == expectedSeq;
+    Serial.printf("[SelfTest] seq %ld (expected %ld), payload hash %s\n", static_cast<long>(klapSeq_),
+                  static_cast<long>(expectedSeq), got.c_str());
+    disconnect();
+    return ok;
+}
+
+bool TapoClient::klapRequest(const String& json, String& response) {
+    uint8_t iv[16];
+    std::vector<uint8_t> body = klapEncrypt(json, iv);
 
     int status = 0;
     std::vector<uint8_t> resp;

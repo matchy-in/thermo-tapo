@@ -25,12 +25,17 @@ public:
     const char* protocolName() const;
     const String& lastError() const { return lastError_; }
 
+    // Checks this board's KLAP crypto against python-kasa reference values.
+    bool selfTest();
+
 private:
     bool call(const char* method, const String& paramsJson, String& resultJson);
     bool rawRequest(const String& json, String& response);
 
     bool klapHandshake();
     bool klapRequest(const String& json, String& response);
+    void klapDerive(const uint8_t localSeed[16], const uint8_t remoteSeed[16], const uint8_t auth[32]);
+    std::vector<uint8_t> klapEncrypt(const String& json, uint8_t iv[16]);
 
     bool passthroughHandshake();
     bool passthroughLogin();

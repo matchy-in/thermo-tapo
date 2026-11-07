@@ -28,6 +28,7 @@ int main(int argc, char** argv) {
         return failures ? 1 : 0;
     }
 
+    check(tapo.selfTest(), "crypto matches python-kasa reference vector");
     check(tapo.connect(), "KLAP handshake");
     check(tapo.getPower() == 0, "plug starts OFF");
     check(tapo.setPower(true), "turn ON");

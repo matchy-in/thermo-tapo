@@ -98,6 +98,9 @@ pip install python-kasa
 python tools/check_plug.py 192.168.0.106 you@example.com "your password" --toggle
 ```
 
+If the board gets HTTP 403 but `check_plug.py` works, run `python tools/compare_plug.py <ip> <email> "<password>"`:
+it talks to the plug the way python-kasa does and the way the board does, and shows where they differ.
+
 **On the board**, type these into the Serial Monitor (115200 baud, "New Line" line ending):
 
 | Command | What it does |
@@ -106,6 +109,7 @@ python tools/check_plug.py 192.168.0.106 you@example.com "your password" --toggl
 | `on` / `off` | Switches the plug (manual mode) and prints PASS/FAIL |
 | `auto` | Returns to thermostat control |
 | `status` | Prints time, sensor, plug and Wi-Fi status |
+| `selftest` | Checks the board's KLAP encryption against python-kasa reference values |
 
 ## Troubleshooting the Tapo connection
 
