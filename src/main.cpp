@@ -34,9 +34,9 @@ constexpr int BUTTON_B_GPIO = 2;
 constexpr int I2C_SCL_GPIO = 22;
 constexpr int I2C_SDA_GPIO = 23;
 
-// Screen settings confirmed with screen_test/screen_test.ino: both chip
-// drivers work on the matrixbit, at 0x3C on SDA 23 / SCL 22.
-#define SCREEN_IS_SH1106 1  // 1 = SH1106, 0 = SSD1306
+// Screen settings confirmed with screen_test/screen_test.ino: the SSD1306
+// driver gives the cleanest picture on the matrixbit, at 0x3C on SDA 23 / SCL 22.
+#define SCREEN_IS_SH1106 0  // 1 = SH1106, 0 = SSD1306
 constexpr uint8_t SCREEN_I2C_ADDR = 0x3C;
 #if SCREEN_IS_SH1106
 U8G2_SH1106_128X64_NONAME_F_HW_I2C screen(U8G2_R0, U8X8_PIN_NONE);

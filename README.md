@@ -75,7 +75,7 @@ WiFi:OK Tapo:OK      (Tapo:... = connecting, Tapo:ERR = failed)
 
 During boot it shows each step (sensor scan, Wi-Fi, Tapo).
 
-The screen is driven by the U8g2 library (SH1106 driver, address 0x3C, SDA GPIO 23 / SCL GPIO 22); MPython is
+The screen is driven by the U8g2 library (SSD1306 driver, address 0x3C, SDA GPIO 23 / SCL GPIO 22); MPython is
 not needed. If you use a different board, upload `screen_test/screen_test.ino`: it cycles through likely
 settings and labels the one that works, which you then copy into the screen settings near the top of
 `src/main.cpp`.
