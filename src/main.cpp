@@ -4,14 +4,7 @@
 #include <Wire.h>
 #include <time.h>
 
-// The board vendor's MPython library (from Mind+) drives the on-board screen
-// reliably; U8g2 is only a fallback when it isn't installed.
-#if __has_include(<MPython.h>)
-#include <MPython.h>
-#define USE_MPYTHON_DISPLAY 1
-#else
 #include <U8g2lib.h>
-#endif
 #include <cmath>
 
 #if __has_include("secrets.h")
@@ -41,16 +34,14 @@ constexpr int BUTTON_B_GPIO = 2;
 constexpr int I2C_SCL_GPIO = 22;
 constexpr int I2C_SDA_GPIO = 23;
 
-#ifndef USE_MPYTHON_DISPLAY
-// Screen settings: run screen_test/screen_test.ino and copy the working
-// option's chip, address and pins here.
+// Screen settings confirmed with screen_test/screen_test.ino: both chip
+// drivers work on the matrixbit, at 0x3C on SDA 23 / SCL 22.
 #define SCREEN_IS_SH1106 1  // 1 = SH1106, 0 = SSD1306
 constexpr uint8_t SCREEN_I2C_ADDR = 0x3C;
 #if SCREEN_IS_SH1106
 U8G2_SH1106_128X64_NONAME_F_HW_I2C screen(U8G2_R0, U8X8_PIN_NONE);
 #else
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C screen(U8G2_R0, U8X8_PIN_NONE);
-#endif
 #endif
 
 // Set to a GPIO number to force a pin, or -1 to auto-detect at boot.
@@ -100,13 +91,7 @@ uint32_t lastScreenAt = 0;
 
 bool sensorRecent(uint32_t maxAgeMs) { return lastValidReadingAt != 0 && millis() - lastValidReadingAt < maxAgeMs; }
 
-// The screen shows 4 lines of up to 16 characters.
-String shownLines[4];
-
 void screenBegin() {
-#ifdef USE_MPYTHON_DISPLAY
-    mPython.begin();
-#else
     Wire.begin(I2C_SDA_GPIO, I2C_SCL_GPIO);
     Serial.print("[Screen] I2C devices found at:");
     int found = 0;
@@ -120,21 +105,10 @@ void screenBegin() {
     Serial.println(found ? "" : " none (screen not on these pins? run screen_test)");
     screen.setI2CAddress(SCREEN_I2C_ADDR * 2);
     screen.begin();
-#endif
 }
 
+// The screen shows 4 lines of up to 16 characters.
 void showLines(const String lines[4], int highlightLine = -1) {
-#ifdef USE_MPYTHON_DISPLAY
-    (void)highlightLine;
-    // Only rewrite changed lines to avoid flicker.
-    for (int i = 0; i < 4; i++) {
-        if (lines[i] == shownLines[i]) continue;
-        display.fillInLine(i + 1, 0);
-        display.setCursorLine(i + 1);
-        display.printLine(lines[i]);
-        shownLines[i] = lines[i];
-    }
-#else
     screen.clearBuffer();
     screen.setFont(u8g2_font_8x13_tf);
     for (int i = 0; i < 4; i++) {
@@ -147,7 +121,6 @@ void showLines(const String lines[4], int highlightLine = -1) {
         screen.setDrawColor(1);
     }
     screen.sendBuffer();
-#endif
 }
 
 void showBootMessage(const char* line1, const char* line2 = "") {

@@ -75,13 +75,10 @@ WiFi:OK Tapo:OK      (Tapo:... = connecting, Tapo:ERR = failed)
 
 During boot it shows each step (sensor scan, Wi-Fi, Tapo).
 
-The screen is driven by the board vendor's **MPython** library (the one Mind+ uses) whenever `MPython.h` is
-installed. To use it from Arduino IDE, search the Mind+ install folder for `MPython.h` and copy the library
-folder that contains it into `Documents\Arduino\libraries`.
-
-Without MPython the sketch falls back to the U8g2 library and prints `[Screen] I2C devices found at: ...` on the
-Serial Monitor. If the picture is shifted sideways or garbled, switch the `U8G2_SH1106_...` line near the top
-of `src/main.cpp` to the commented `U8G2_SSD1306_...` line.
+The screen is driven by the U8g2 library (SH1106 driver, address 0x3C, SDA GPIO 23 / SCL GPIO 22); MPython is
+not needed. If you use a different board, upload `screen_test/screen_test.ino`: it cycles through likely
+settings and labels the one that works, which you then copy into the screen settings near the top of
+`src/main.cpp`.
 
 ## Testing
 
