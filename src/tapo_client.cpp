@@ -253,8 +253,17 @@ bool TapoClient::post(const String& path, const uint8_t* body, size_t len, const
                   "\r\nAccept: */*\r\nContent-Length: " + String(len) + "\r\nConnection: close\r\n";
     if (cookie_.length()) head += "Cookie: " + cookie_ + "\r\n";
     head += "\r\n";
-    client.write(reinterpret_cast<const uint8_t*>(head.c_str()), head.length());
-    if (len) client.write(body, len);
+    // One write: the plug's HTTP server can answer 403 if the body arrives in a
+    // separate TCP segment from the headers.
+    std::vector<uint8_t> request(head.c_str(), head.c_str() + head.length());
+    request.insert(request.end(), body, body + len);
+    client.setNoDelay(true);
+    size_t sent = client.write(request.data(), request.size());
+    if (sent != request.size()) {
+        fail("sent only " + String(sent) + " of " + String(request.size()) + " bytes to " + path);
+        client.stop();
+        return false;
+    }
 
     uint32_t deadline = millis() + kHttpTimeoutMs;
     String line;

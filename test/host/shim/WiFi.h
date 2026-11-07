@@ -42,6 +42,8 @@ public:
         return 1;
     }
 
+    void setNoDelay(bool) {}
+
     size_t write(const uint8_t* data, size_t len) {
         return fd_ >= 0 ? static_cast<size_t>(::send(fd_, data, len, MSG_NOSIGNAL)) : 0;
     }
