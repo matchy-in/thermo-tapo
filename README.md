@@ -109,6 +109,7 @@ it talks to the plug the way python-kasa does and the way the board does, and sh
 | `on` / `off` | Switches the plug (manual mode) and prints PASS/FAIL |
 | `auto` | Returns to thermostat control |
 | `status` | Prints time, sensor, plug and Wi-Fi status |
+| `tapodebug` | Logs in with full `[Dump]` output; paste it into `tools/verify_dump.py` to check every byte against python-kasa |
 | `selftest` | Checks the board's KLAP encryption against python-kasa reference values |
 
 ## Troubleshooting the Tapo connection

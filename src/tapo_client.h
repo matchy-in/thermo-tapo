@@ -27,6 +27,8 @@ public:
 
     // Checks this board's KLAP crypto against python-kasa reference values.
     bool selfTest();
+    // Prints seeds, cookie and raw request bytes for tools/verify_dump.py.
+    void setDebug(bool on) { debug_ = on; }
 
 private:
     bool call(const char* method, const String& paramsJson, String& resultJson);
@@ -50,6 +52,7 @@ private:
     // the TCP connection it was created on.
     WiFiClient conn_;
     bool lastConnReused_ = false;
+    bool debug_ = false;
     String ip_, email_, password_;
     String cookie_, token_, lastError_, terminalUuid_;
     Protocol protocol_ = Protocol::None;

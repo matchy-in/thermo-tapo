@@ -361,6 +361,11 @@ bool TapoClient::klapHandshake() {
     }
 
     if (cookie_.length() == 0) Serial.println("[Tapo] Warning: plug sent no TP_SESSIONID cookie");
+    if (debug_) {
+        Serial.println("[Dump] local=" + toHex(localSeed, 16));
+        Serial.println("[Dump] handshake1=" + toHex(resp.data(), resp.size()));
+        Serial.println("[Dump] cookie=" + cookie_);
+    }
 
     const uint8_t* remoteSeed = resp.data();
     const uint8_t* serverHash = resp.data() + 16;
@@ -455,6 +460,11 @@ bool TapoClient::selfTest() {
 bool TapoClient::klapRequest(const String& json, String& response) {
     uint8_t iv[16];
     std::vector<uint8_t> body = klapEncrypt(json, iv);
+    if (debug_) {
+        Serial.println("[Dump] json=" + json);
+        Serial.println("[Dump] seq=" + String(klapSeq_));
+        Serial.println("[Dump] body=" + toHex(body.data(), body.size()));
+    }
 
     int status = 0;
     std::vector<uint8_t> resp;

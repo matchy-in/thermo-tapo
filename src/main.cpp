@@ -372,7 +372,7 @@ void setup() {
     Serial.println("=== SETUP COMPLETE ===\n");
     Serial.println("Button A: heater on/off (switches to MANUAL). Button B: AUTO <-> MANUAL.");
     Serial.println("MANUAL returns to AUTO by itself after 30 minutes.");
-    Serial.println("Serial Monitor commands: on, off, auto, status, tapo, selftest, screen");
+    Serial.println("Serial Monitor commands: on, off, auto, status, tapo, tapodebug, selftest, screen");
 }
 
 void runCommand(String cmd) {
@@ -388,6 +388,13 @@ void runCommand(String cmd) {
         Serial.println("[Mode] Back to AUTO");
     } else if (cmd == "status") {
         printStatus();
+    } else if (cmd == "tapodebug") {
+        tapo.setDebug(true);
+        tapo.disconnect();
+        bool ok = tapoConnect();
+        tapo.setDebug(false);
+        Serial.println(ok ? "[Test] PASS" : "[Test] FAIL: " + tapo.lastError());
+        Serial.println("Copy all [Dump] lines into tools/verify_dump.py");
     } else if (cmd == "selftest") {
         bool ok = tapo.selfTest();
         tapoState = TapoState::Failed;
@@ -405,7 +412,7 @@ void runCommand(String cmd) {
         Serial.println(ok ? String("[Test] PASS: connected via ") + tapo.protocolName() + ", plug is " + plugText()
                           : "[Test] FAIL: " + tapo.lastError());
     } else {
-        Serial.println("Commands: on, off, auto, status, tapo, selftest, screen");
+        Serial.println("Commands: on, off, auto, status, tapo, tapodebug, selftest, screen");
     }
 }
 

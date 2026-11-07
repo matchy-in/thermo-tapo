@@ -20,6 +20,7 @@ int main(int argc, char** argv) {
 
     TapoClient tapo;
     tapo.begin("127.0.0.1", argv[1], argv[2]);
+    if (getenv("TAPO_DEBUG")) tapo.setDebug(true);
 
     if (expect == "auth-fail") {
         check(!tapo.connect(), "connect is refused with wrong password");
