@@ -42,10 +42,15 @@ constexpr int I2C_SCL_GPIO = 22;
 constexpr int I2C_SDA_GPIO = 23;
 
 #ifndef USE_MPYTHON_DISPLAY
-// Fallback driver for the 128x64 OLED. If the picture is shifted sideways or
-// garbled, use the SSD1306 line instead of the SH1106 one.
-U8G2_SH1106_128X64_NONAME_F_HW_I2C screen(U8G2_R0, U8X8_PIN_NONE, I2C_SCL_GPIO, I2C_SDA_GPIO);
-// U8G2_SSD1306_128X64_NONAME_F_HW_I2C screen(U8G2_R0, U8X8_PIN_NONE, I2C_SCL_GPIO, I2C_SDA_GPIO);
+// Screen settings: run screen_test/screen_test.ino and copy the working
+// option's chip, address and pins here.
+#define SCREEN_IS_SH1106 1  // 1 = SH1106, 0 = SSD1306
+constexpr uint8_t SCREEN_I2C_ADDR = 0x3C;
+#if SCREEN_IS_SH1106
+U8G2_SH1106_128X64_NONAME_F_HW_I2C screen(U8G2_R0, U8X8_PIN_NONE);
+#else
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C screen(U8G2_R0, U8X8_PIN_NONE);
+#endif
 #endif
 
 // Set to a GPIO number to force a pin, or -1 to auto-detect at boot.
@@ -112,8 +117,8 @@ void screenBegin() {
             found++;
         }
     }
-    Serial.println(found ? "" : " none (screen not on GPIO 23/22?)");
-    screen.setBusClock(400000);
+    Serial.println(found ? "" : " none (screen not on these pins? run screen_test)");
+    screen.setI2CAddress(SCREEN_I2C_ADDR * 2);
     screen.begin();
 #endif
 }
