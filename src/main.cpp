@@ -404,16 +404,24 @@ void runCommand(String cmd) {
     }
 }
 
+// Runs a command on Enter, or 300 ms after the last character so it also works
+// when the Serial Monitor is set to "No Line Ending".
 void readSerialCommands() {
     static String line;
+    static uint32_t lastCharAt = 0;
     while (Serial.available()) {
         char c = static_cast<char>(Serial.read());
+        lastCharAt = millis();
         if (c == '\n' || c == '\r') {
             if (line.length()) runCommand(line);
             line = "";
         } else if (line.length() < 32) {
             line += c;
         }
+    }
+    if (line.length() && millis() - lastCharAt > 300) {
+        runCommand(line);
+        line = "";
     }
 }
 

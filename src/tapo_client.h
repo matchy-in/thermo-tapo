@@ -44,8 +44,9 @@ private:
     // Kept open across handshake and requests: the plug ties a KLAP session to
     // the TCP connection it was created on.
     WiFiClient conn_;
+    bool lastConnReused_ = false;
     String ip_, email_, password_;
-    String cookie_, token_, lastError_;
+    String cookie_, token_, lastError_, terminalUuid_;
     Protocol protocol_ = Protocol::None;
 
     uint8_t klapKey_[16] = {};

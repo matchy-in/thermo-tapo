@@ -197,6 +197,10 @@ void TapoClient::begin(const char* ip, const char* email, const char* password) 
     ip_ = ip;
     email_ = email;
     password_ = password;
+    uint8_t seed[16], md5[16];
+    esp_fill_random(seed, sizeof(seed));
+    digest(MBEDTLS_MD_MD5, {{seed, 16}}, md5);
+    terminalUuid_ = base64Encode(md5, sizeof(md5));
     disconnect();
 }
 
@@ -243,7 +247,7 @@ bool TapoClient::post(const String& path, const uint8_t* body, size_t len, const
     // Hand-rolled HTTP: the plug sends TP_SESSIONID and TIMEOUT cookies, and only
     // TP_SESSIONID may be sent back. HTTPClient keeps just one Set-Cookie header.
     String head = "POST " + path + " HTTP/1.1\r\nHost: " + ip_ + "\r\nContent-Type: " + contentType +
-                  "\r\nAccept: */*\r\nContent-Length: " + String(len) + "\r\nConnection: keep-alive\r\n";
+                  "\r\nAccept: */*\r\nUser-Agent: matrixbit-thermostat\r\nContent-Length: " + String(len) + "\r\nConnection: keep-alive\r\n";
     if (cookie_.length()) head += "Cookie: " + cookie_ + "\r\n";
     head += "\r\n";
     // One write: the plug's HTTP server can answer 403 if the body arrives in a
@@ -257,6 +261,7 @@ bool TapoClient::post(const String& path, const uint8_t* body, size_t len, const
         out.clear();
         status = 0;
         bool reused = conn_.connected();
+        lastConnReused_ = reused;
         if (!reused) {
             conn_.stop();
             if (!conn_.connect(ip_.c_str(), 80, kHttpTimeoutMs)) {
@@ -425,7 +430,8 @@ bool TapoClient::klapRequest(const String& json, String& response) {
               false, status, resp))
         return false;
     if (status != 200) {
-        fail("KLAP request: HTTP " + String(status) + " (session expired?)");
+        fail("KLAP request: HTTP " + String(status) + " (seq " + String(klapSeq_) + ", " + String(body.size()) +
+             " bytes, connection " + (lastConnReused_ ? "reused" : "new") + ")");
         return false;
     }
     if (resp.size() < 48 || !aesDecrypt(klapKey_, iv, resp.data() + 32, resp.size() - 32, response)) {
@@ -590,7 +596,9 @@ bool TapoClient::call(const char* method, const String& paramsJson, String& resu
 
         String json = String("{\"method\":\"") + method + "\"";
         if (paramsJson.length()) json += ",\"params\":" + paramsJson;
-        json += ",\"requestTimeMils\":" + String(static_cast<unsigned long long>(nowMillis())) + "}";
+        // Same fields python-kasa sends, which the plug is known to accept.
+        json += ",\"request_time_milis\":" + String(static_cast<unsigned long long>(nowMillis())) +
+                ",\"terminal_uuid\":\"" + terminalUuid_ + "\"}";
 
         String response;
         if (!rawRequest(json, response)) {
