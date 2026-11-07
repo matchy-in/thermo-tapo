@@ -91,8 +91,13 @@ uint32_t lastScreenAt = 0;
 
 bool sensorRecent(uint32_t maxAgeMs) { return lastValidReadingAt != 0 && millis() - lastValidReadingAt < maxAgeMs; }
 
+// Same sequence as screen_test.ino, which is known to work on the matrixbit.
+// The OLED ignores its init commands if they arrive too soon after power-up.
 void screenBegin() {
+    delay(500);
+    Wire.end();
     Wire.begin(I2C_SDA_GPIO, I2C_SCL_GPIO);
+    Wire.setClock(100000);
     Serial.print("[Screen] I2C devices found at:");
     int found = 0;
     for (uint8_t addr = 1; addr < 127; addr++) {
@@ -104,7 +109,19 @@ void screenBegin() {
     }
     Serial.println(found ? "" : " none (screen not on these pins? run screen_test)");
     screen.setI2CAddress(SCREEN_I2C_ADDR * 2);
-    screen.begin();
+    bool ok = screen.begin();
+    Serial.printf("[Screen] %s at 0x%02X, SDA=%d SCL=%d: %s\n", SCREEN_IS_SH1106 ? "SH1106" : "SSD1306",
+                  SCREEN_I2C_ADDR, I2C_SDA_GPIO, I2C_SCL_GPIO, ok ? "started" : "begin() failed");
+}
+
+void screenTestPattern() {
+    screen.clearBuffer();
+    screen.drawFrame(0, 0, 128, 64);
+    screen.setFont(u8g2_font_helvB14_tf);
+    screen.drawStr(8, 24, "SCREEN OK");
+    screen.setFont(u8g2_font_6x10_tf);
+    screen.drawStr(8, 44, "Thermostat sketch");
+    screen.sendBuffer();
 }
 
 // The screen shows 4 lines of up to 16 characters.
@@ -330,10 +347,10 @@ void printStatus() {
 
 void setup() {
     Serial.begin(115200);
+    delay(1500);
+    Serial.println("\n\n=== MATRIXBIT THERMOSTAT BOOTING (built " __DATE__ " " __TIME__ ") ===");
     screenBegin();
     showBootMessage("Starting...");
-    delay(1500);
-    Serial.println("\n\n=== MATRIXBIT THERMOSTAT BOOTING ===");
 
     pinMode(BUTTON_A_GPIO, INPUT_PULLUP);
     pinMode(BUTTON_B_GPIO, INPUT_PULLUP);
@@ -354,7 +371,7 @@ void setup() {
     lastSyncAt = millis();
     Serial.println("=== SETUP COMPLETE ===\n");
     Serial.println("Button B: toggle heater (manual for 30 min). Button A: back to AUTO.");
-    Serial.println("Serial Monitor commands: on, off, auto, status, tapo");
+    Serial.println("Serial Monitor commands: on, off, auto, status, tapo, screen");
 }
 
 void runCommand(String cmd) {
@@ -370,13 +387,19 @@ void runCommand(String cmd) {
         Serial.println("[Mode] Back to AUTO");
     } else if (cmd == "status") {
         printStatus();
+    } else if (cmd == "screen") {
+        screenBegin();
+        screenTestPattern();
+        Serial.println("[Test] Screen re-initialised; it should show SCREEN OK for 5 s");
+        delay(5000);
+        drawScreen();
     } else if (cmd == "tapo") {
         tapo.disconnect();
         bool ok = tapoConnect();
         Serial.println(ok ? String("[Test] PASS: connected via ") + tapo.protocolName() + ", plug is " + plugText()
                           : "[Test] FAIL: " + tapo.lastError());
     } else {
-        Serial.println("Commands: on, off, auto, status, tapo");
+        Serial.println("Commands: on, off, auto, status, tapo, screen");
     }
 }
 
