@@ -179,6 +179,7 @@ bool tapoConnect() {
 }
 
 struct Button {
+    explicit Button(int p) : pin(p) {}
     int pin;
     bool lastLevel = HIGH;
     uint32_t changedAt = 0;
