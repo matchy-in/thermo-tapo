@@ -367,8 +367,11 @@ bool TapoClient::klapHandshake() {
         Serial.println("[Dump] cookie=" + cookie_);
     }
 
-    const uint8_t* remoteSeed = resp.data();
-    const uint8_t* serverHash = resp.data() + 16;
+    // Copied out because resp is reused for handshake2, whose reply would
+    // overwrite the seed if we kept pointing into the buffer.
+    uint8_t remoteSeed[16], serverHash[32];
+    memcpy(remoteSeed, resp.data(), 16);
+    memcpy(serverHash, resp.data() + 16, 32);
 
     // The plug proves which credentials it holds; check ours before handshake2
     // so a credential problem is reported clearly instead of as a generic 403.

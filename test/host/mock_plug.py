@@ -5,6 +5,7 @@ Behaves like real firmware in the ways that have bitten this project:
 - requests are rejected with 403 unless exactly the session cookie is sent back
 - the session can be made to expire after N requests (403 -> client must re-handshake)
 - optionally, a session only works on the TCP connection that did handshake1
+- handshake2 is answered with a 1-byte body, like real firmware
 - optionally, the plug closes the connection after every reply
 """
 
@@ -95,7 +96,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(403)
             s["verified"] = True
             s["session"] = KlapEncryptionSession(s["local"], s["remote"], plug.auth)
-            return self.reply(200)
+            # Real P110 firmware answers handshake2 with a 1-byte body.
+            return self.reply(200, b"0")
 
         if url.path == "/app/request" and s["verified"]:
             s["count"] += 1
