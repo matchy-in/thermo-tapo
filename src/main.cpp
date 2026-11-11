@@ -38,6 +38,7 @@ constexpr int I2C_SDA_GPIO = 23;
 // driver gives the cleanest picture on the matrixbit, at 0x3C on SDA 23 / SCL 22.
 #define SCREEN_IS_SH1106 0  // 1 = SH1106, 0 = SSD1306
 constexpr uint8_t SCREEN_I2C_ADDR = 0x3C;
+constexpr uint8_t SCREEN_BRIGHTNESS = 10;  // 0 (dimmest) .. 255 (brightest)
 #if SCREEN_IS_SH1106
 U8G2_SH1106_128X64_NONAME_F_HW_I2C screen(U8G2_R0, U8X8_PIN_NONE);
 #else
@@ -114,6 +115,7 @@ void screenBegin() {
     Serial.println(found ? "" : " none (screen not on these pins? run screen_test)");
     screen.setI2CAddress(SCREEN_I2C_ADDR * 2);
     bool ok = screen.begin();
+    screen.setContrast(SCREEN_BRIGHTNESS);
     Serial.printf("[Screen] %s at 0x%02X, SDA=%d SCL=%d: %s\n", SCREEN_IS_SH1106 ? "SH1106" : "SSD1306",
                   SCREEN_I2C_ADDR, I2C_SDA_GPIO, I2C_SCL_GPIO, ok ? "started" : "begin() failed");
 }
