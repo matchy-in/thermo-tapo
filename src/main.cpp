@@ -53,6 +53,9 @@ constexpr uint8_t SENSOR_TYPE = DHT11;  // DHT22 for the white AM2302 sensor
 // thermometer/hygrometer placed next to the sensor for an hour or so.
 constexpr float TEMP_OFFSET_C = 0.0f;
 constexpr float HUMIDITY_OFFSET_PCT = 0.0f;
+// The DHT11's humidity reading is unreliable, so it is hidden. Set to true
+// after switching to a better sensor (DHT22, AHT20, SHT31).
+constexpr bool SHOW_HUMIDITY = false;
 
 // Thermostat
 constexpr float HEAT_ON_AT_C = 16.0f;   // heater on at or below this
@@ -165,7 +168,11 @@ void drawScreen() {
     }
 
     if (sensorRecent(10000)) {
-        snprintf(buf, sizeof(buf), "T:%.1fC H:%.0f%%", lastTempC, lastHumidity);
+        if (SHOW_HUMIDITY) {
+            snprintf(buf, sizeof(buf), "T:%.1fC H:%.0f%%", lastTempC, lastHumidity);
+        } else {
+            snprintf(buf, sizeof(buf), "Temp: %.1f C", lastTempC);
+        }
         lines[1] = buf;
     } else {
         lines[1] = "Sensor: no data";
@@ -352,8 +359,9 @@ void printStatus() {
     Serial.printf("Time: %s | WiFi: %s | Mode: %s\n", timeStr,
                   WiFi.status() == WL_CONNECTED ? "OK" : "DOWN", mode == Mode::Auto ? "AUTO" : "MANUAL");
     if (lastValidReadingAt && millis() - lastValidReadingAt < 10000) {
-        Serial.printf("Sensor (GPIO %d): %.1f C, %.0f %% | on <= %.1f C, off >= %.1f C\n", sensorPin, lastTempC,
-                      lastHumidity, HEAT_ON_AT_C, HEAT_OFF_AT_C);
+        Serial.printf("Sensor (GPIO %d): %.1f C", sensorPin, lastTempC);
+        if (SHOW_HUMIDITY) Serial.printf(", %.0f %%", lastHumidity);
+        Serial.printf(" | on <= %.1f C, off >= %.1f C\n", HEAT_ON_AT_C, HEAT_OFF_AT_C);
     } else {
         Serial.println("Sensor: no valid reading");
     }
