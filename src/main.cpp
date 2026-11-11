@@ -48,6 +48,10 @@ U8G2_SSD1306_128X64_NONAME_F_HW_I2C screen(U8G2_R0, U8X8_PIN_NONE);
 constexpr int SENSOR_GPIO = -1;
 constexpr int SENSOR_SCAN_PINS[] = {GPIO_P1, GPIO_P23, GPIO_P0};
 constexpr uint8_t SENSOR_TYPE = DHT11;  // DHT22 for the white AM2302 sensor
+// Calibration: added to every reading. Set by comparing with a trusted
+// thermometer/hygrometer placed next to the sensor for an hour or so.
+constexpr float TEMP_OFFSET_C = 0.0f;
+constexpr float HUMIDITY_OFFSET_PCT = 0.0f;
 
 // Thermostat
 constexpr float HEAT_ON_AT_C = 16.0f;   // heater on at or below this
@@ -124,18 +128,19 @@ void screenTestPattern() {
     screen.sendBuffer();
 }
 
-// The screen shows 4 lines of up to 16 characters.
-void showLines(const String lines[4], int highlightLine = -1) {
+// The screen shows 4 lines of up to 16 characters (8x13 font, 8 px per char).
+// Optionally inverts hlLen characters starting at hlStart on line hlLine.
+void showLines(const String lines[4], int hlLine = -1, int hlStart = 0, int hlLen = 0) {
     screen.clearBuffer();
     screen.setFont(u8g2_font_8x13_tf);
     for (int i = 0; i < 4; i++) {
         int baseline = 13 + i * 16;
-        if (i == highlightLine) {
-            screen.drawBox(0, baseline - 12, 128, 15);
-            screen.setDrawColor(0);
-        }
         screen.drawStr(0, baseline, lines[i].c_str());
-        screen.setDrawColor(1);
+        if (i == hlLine && hlLen > 0) {
+            screen.setDrawColor(2);  // XOR: inverts the text underneath
+            screen.drawBox(hlStart * 8 - 2, baseline - 11, hlLen * 8 + 3, 14);
+            screen.setDrawColor(1);
+        }
     }
     screen.sendBuffer();
 }
@@ -165,7 +170,8 @@ void drawScreen() {
     }
 
     const char* heater = plugState == 1 ? "ON" : plugState == 0 ? "OFF" : "?";
-    snprintf(buf, sizeof(buf), "Heater: %-3s %s", heater, mode == Mode::Auto ? "AUTO" : "MAN");
+    const char* heaterLabel = "Heater: ";
+    snprintf(buf, sizeof(buf), "%s%-3s %s", heaterLabel, heater, mode == Mode::Auto ? "AUTO" : "MAN");
     lines[2] = buf;
 
     const char* tapoText = tapoState == TapoState::Ok           ? "OK"
@@ -174,7 +180,11 @@ void drawScreen() {
     snprintf(buf, sizeof(buf), "WiFi:%s Tapo:%s", WiFi.status() == WL_CONNECTED ? "OK" : "--", tapoText);
     lines[3] = buf;
 
-    showLines(lines, plugState == 1 ? 2 : -1);
+    if (plugState == 1) {
+        showLines(lines, 2, strlen(heaterLabel), strlen(heater));
+    } else {
+        showLines(lines);
+    }
     lastScreenAt = millis();
 }
 
@@ -217,7 +227,10 @@ Button buttonB{BUTTON_B_GPIO};
 bool tryReadSensor(DHT& d, float& t, float& h) {
     t = d.readTemperature(false, true);
     h = d.readHumidity();
-    return !std::isnan(t) && !std::isnan(h);
+    if (std::isnan(t) || std::isnan(h)) return false;
+    t += TEMP_OFFSET_C;
+    h = std::min(100.0f, std::max(0.0f, h + HUMIDITY_OFFSET_PCT));
+    return true;
 }
 
 void setupSensor() {
