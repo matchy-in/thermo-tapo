@@ -72,6 +72,16 @@ constexpr uint32_t TAPO_RETRY_MAX_MS = 5UL * 60 * 1000;
 uint32_t tapoRetryMs = TAPO_RETRY_MS;
 constexpr uint32_t WIFI_RETRY_MS = 15UL * 1000;
 constexpr uint32_t SCREEN_INTERVAL_MS = 1000;
+// The screen alternates between the status page and the temperature graph.
+// Set GRAPH_PAGE_S to 0 to never show the graph.
+constexpr uint32_t STATUS_PAGE_S = 10;
+constexpr uint32_t GRAPH_PAGE_S = 5;
+constexpr uint32_t STATUS_AFTER_BUTTON_MS = 15UL * 1000;
+
+// Temperature history: one averaged point every 12 min = the last 24 hours.
+// Kept in RAM, so it starts again after a reset or power cut.
+constexpr int HISTORY_POINTS = 120;
+constexpr uint32_t HISTORY_INTERVAL_MS = 24UL * 60 * 60 * 1000 / HISTORY_POINTS;
 
 const char* NTP_SERVER = "uk.pool.ntp.org";
 const char* UK_TZ = "GMT0BST,M3.5.0/1,M10.5.0";
@@ -96,8 +106,55 @@ uint32_t manualSince = 0;
 
 uint32_t lastSensorAt = 0, lastStatusAt = 0, lastSyncAt = 0, lastTapoAttemptAt = 0, lastWifiAttemptAt = 0;
 uint32_t lastScreenAt = 0;
+uint32_t lastButtonAt = 0;
+
+struct HistoryPoint {
+    float tempC;
+    bool heaterOn;
+};
+HistoryPoint history[HISTORY_POINTS];
+int historyCount = 0;  // valid points; history[historyCount-1] is the newest
+uint32_t historyPeriodStart = 0;
+float historySum = 0;
+int historySamples = 0;
+bool historyHeaterOn = false;
 
 bool sensorRecent(uint32_t maxAgeMs) { return lastValidReadingAt != 0 && millis() - lastValidReadingAt < maxAgeMs; }
+
+void recordHistorySample(float tempC) {
+    historySum += tempC;
+    historySamples++;
+    if (plugState == 1) historyHeaterOn = true;
+}
+
+// Called every loop; closes the current period once it is HISTORY_INTERVAL_MS old.
+void updateHistory() {
+    uint32_t now = millis();
+    if (historyPeriodStart == 0) historyPeriodStart = now;
+    if (now - historyPeriodStart < HISTORY_INTERVAL_MS) return;
+    historyPeriodStart = now;
+    if (historySamples == 0) return;
+    if (historyCount == HISTORY_POINTS) {
+        memmove(history, history + 1, sizeof(HistoryPoint) * (HISTORY_POINTS - 1));
+        historyCount--;
+    }
+    history[historyCount++] = {historySum / historySamples, historyHeaterOn};
+    historySum = 0;
+    historySamples = 0;
+    historyHeaterOn = false;
+}
+
+void printHistory() {
+    if (historyCount == 0) {
+        Serial.printf("[History] No points yet (one every %lu min)\n", (unsigned long)(HISTORY_INTERVAL_MS / 60000));
+        return;
+    }
+    Serial.printf("[History] %d points, one every %lu min, oldest first:\n", historyCount, (unsigned long)(HISTORY_INTERVAL_MS / 60000));
+    for (int i = 0; i < historyCount; i++) {
+        unsigned long minsAgo = (historyCount - 1 - i) * HISTORY_INTERVAL_MS / 60000;
+        Serial.printf("  -%4lu min  %.1f C%s\n", minsAgo, history[i].tempC, history[i].heaterOn ? "  heater on" : "");
+    }
+}
 
 // Same sequence as screen_test.ino, which is known to work on the matrixbit.
 // The OLED ignores its init commands if they arrive too soon after power-up.
@@ -155,7 +212,65 @@ void showBootMessage(const char* line1, const char* line2 = "") {
     showLines(lines);
 }
 
+void drawGraph() {
+    screen.clearBuffer();
+    screen.setFont(u8g2_font_5x8_tf);
+    if (historyCount < 2) {
+        screen.drawStr(0, 8, "Temperature, last 24h");
+        screen.drawStr(0, 30, "Collecting data...");
+        char buf[32];
+        unsigned long mins = HISTORY_INTERVAL_MS * (2 - historyCount) / 60000;
+        snprintf(buf, sizeof(buf), "Graph in about %lu min", mins);
+        screen.drawStr(0, 42, buf);
+        screen.sendBuffer();
+        return;
+    }
+
+    float lo = history[0].tempC, hi = lo;
+    for (int i = 1; i < historyCount; i++) {
+        lo = std::min(lo, history[i].tempC);
+        hi = std::max(hi, history[i].tempC);
+    }
+    char buf[40];
+    snprintf(buf, sizeof(buf), "24h min %.1f max %.1f C", lo, hi);
+    screen.drawStr(0, 7, buf);
+
+    // Keep at least a 2 C span so small wobbles don't fill the whole height.
+    float mid = (lo + hi) / 2;
+    float scaleLo = std::min(lo, mid - 1.0f), scaleHi = std::max(hi, mid + 1.0f);
+
+    const int left = 4, top = 10, bottom = 55;  // plot area inside the frame
+    screen.drawFrame(left - 1, top - 1, HISTORY_POINTS + 2, bottom - top + 3);
+    auto yFor = [&](float t) { return bottom - (int)lroundf((t - scaleLo) * (bottom - top) / (scaleHi - scaleLo)); };
+
+    // Dotted line at the heater-on temperature, if it is in view.
+    if (HEAT_ON_AT_C >= scaleLo && HEAT_ON_AT_C <= scaleHi) {
+        int y = yFor(HEAT_ON_AT_C);
+        for (int x = left; x < left + HISTORY_POINTS; x += 3) screen.drawPixel(x, y);
+    }
+
+    // Newest point at the right edge.
+    int x0 = left + HISTORY_POINTS - historyCount;
+    for (int i = 0; i < historyCount; i++) {
+        int x = x0 + i;
+        if (i > 0) screen.drawLine(x - 1, yFor(history[i - 1].tempC), x, yFor(history[i].tempC));
+        if (history[i].heaterOn) screen.drawVLine(x, 59, 4);  // bar under the graph = heater was on
+    }
+    screen.sendBuffer();
+}
+
+bool graphPageNow() {
+    if (GRAPH_PAGE_S == 0) return false;
+    if (lastButtonAt != 0 && millis() - lastButtonAt < STATUS_AFTER_BUTTON_MS) return false;
+    return (millis() / 1000) % (STATUS_PAGE_S + GRAPH_PAGE_S) >= STATUS_PAGE_S;
+}
+
 void drawScreen() {
+    if (graphPageNow()) {
+        drawGraph();
+        lastScreenAt = millis();
+        return;
+    }
     char buf[32];
     String lines[4];
 
@@ -320,6 +435,7 @@ void readSensor() {
         lastTempC = t;
         lastHumidity = h;
         lastValidReadingAt = millis();
+        recordHistorySample(t);
     }
 }
 
@@ -395,7 +511,7 @@ void setup() {
     Serial.println("=== SETUP COMPLETE ===\n");
     Serial.println("Button A: heater on/off (switches to MANUAL). Button B: AUTO <-> MANUAL.");
     Serial.println("MANUAL returns to AUTO by itself after 30 minutes.");
-    Serial.println("Serial Monitor commands: on, off, auto, status, tapo, tapodebug, selftest, screen");
+    Serial.println("Serial Monitor commands: on, off, auto, status, tapo, tapodebug, selftest, screen, history");
 }
 
 void runCommand(String cmd) {
@@ -423,6 +539,8 @@ void runCommand(String cmd) {
         tapoState = TapoState::Failed;
         lastTapoAttemptAt = millis() - tapoRetryMs;
         Serial.println(ok ? "[Test] PASS: KLAP crypto matches python-kasa" : "[Test] FAIL: KLAP crypto differs");
+    } else if (cmd == "history") {
+        printHistory();
     } else if (cmd == "screen") {
         screenBegin();
         screenTestPattern();
@@ -435,7 +553,7 @@ void runCommand(String cmd) {
         Serial.println(ok ? String("[Test] PASS: connected via ") + tapo.protocolName() + ", plug is " + plugText()
                           : "[Test] FAIL: " + tapo.lastError());
     } else {
-        Serial.println("Commands: on, off, auto, status, tapo, tapodebug, selftest, screen");
+        Serial.println("Commands: on, off, auto, status, tapo, tapodebug, selftest, screen, history");
     }
 }
 
@@ -468,11 +586,13 @@ void loop() {
     // Button A toggles the heater; doing so switches to MANUAL so the thermostat
     // doesn't immediately undo it.
     if (buttonA.pressed()) {
+        lastButtonAt = now;
         mode = Mode::Manual;
         manualSince = now;
         setHeater(plugState != 1, "button A");
     }
     if (buttonB.pressed()) {
+        lastButtonAt = now;
         mode = mode == Mode::Auto ? Mode::Manual : Mode::Auto;
         manualSince = now;
         Serial.printf("[Mode] Button B: %s\n", mode == Mode::Auto ? "AUTO" : "MANUAL");
@@ -490,6 +610,7 @@ void loop() {
         readSensor();
         runThermostat();
     }
+    updateHistory();
 
     if (!tapo.connected() && WiFi.status() == WL_CONNECTED && now - lastTapoAttemptAt >= tapoRetryMs) {
         tapoConnect();
