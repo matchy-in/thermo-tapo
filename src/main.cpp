@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <DHT.h>
+#include <Preferences.h>
 #include <WiFi.h>
 #include <Wire.h>
 #include <time.h>
@@ -74,7 +75,8 @@ constexpr uint32_t WIFI_RETRY_MS = 15UL * 1000;
 constexpr uint32_t SCREEN_INTERVAL_MS = 1000;
 
 // Temperature history: one averaged point every 12 min = the last 24 hours.
-// Kept in RAM, so it starts again after a reset or power cut.
+// Each new point is also saved to flash, so the graph survives a power cut;
+// the time the board was off shows as a gap once the clock has synced.
 constexpr int HISTORY_POINTS = 120;
 constexpr uint32_t HISTORY_INTERVAL_MS = 24UL * 60 * 60 * 1000 / HISTORY_POINTS;
 
@@ -104,7 +106,7 @@ uint32_t lastScreenAt = 0;
 bool showGraph = false;  // toggled by pressing A and B together
 
 struct HistoryPoint {
-    float tempC;
+    float tempC;  // NAN = no data (board was off)
     bool heaterOn;
 };
 HistoryPoint history[HISTORY_POINTS];
@@ -113,6 +115,78 @@ uint32_t historyPeriodStart = 0;
 float historySum = 0;
 int historySamples = 0;
 bool historyHeaterOn = false;
+time_t historySavedAt = 0;   // clock time of the newest saved point, 0 = unknown
+bool historyGapCheck = false;  // fill in the power-off gap once the clock is set
+
+Preferences prefs;
+constexpr int16_t HISTORY_GAP = INT16_MIN;
+// Flash format: temperatures in 0.1 C steps plus one heater flag per point,
+// about 370 bytes for a full day.
+struct SavedHistory {
+    uint8_t version;
+    uint8_t count;
+    uint32_t newestAt;
+    int16_t tenths[HISTORY_POINTS];
+    uint8_t heater[HISTORY_POINTS];
+};
+
+bool clockValid(time_t& out) {
+    out = time(nullptr);
+    return out > 1700000000;  // NTP has synced (after Nov 2023)
+}
+
+void saveHistory() {
+    SavedHistory h = {};
+    h.version = 1;
+    h.count = historyCount;
+    time_t t;
+    h.newestAt = clockValid(t) ? (uint32_t)t : 0;
+    historySavedAt = h.newestAt;
+    for (int i = 0; i < historyCount; i++) {
+        h.tenths[i] = std::isnan(history[i].tempC) ? HISTORY_GAP : (int16_t)lroundf(history[i].tempC * 10);
+        h.heater[i] = history[i].heaterOn;
+    }
+    prefs.putBytes("hist", &h, sizeof(h));
+}
+
+void loadHistory() {
+    prefs.begin("thermostat", false);
+    SavedHistory h;
+    if (prefs.getBytesLength("hist") != sizeof(h) || prefs.getBytes("hist", &h, sizeof(h)) != sizeof(h) ||
+        h.version != 1 || h.count > HISTORY_POINTS) {
+        Serial.println("[History] Nothing saved yet");
+        return;
+    }
+    historyCount = h.count;
+    for (int i = 0; i < historyCount; i++) {
+        history[i].tempC = h.tenths[i] == HISTORY_GAP ? NAN : h.tenths[i] / 10.0f;
+        history[i].heaterOn = h.heater[i];
+    }
+    historySavedAt = h.newestAt;
+    historyGapCheck = historySavedAt != 0;
+    Serial.printf("[History] Restored %d points from flash\n", historyCount);
+}
+
+void pushHistory(float tempC, bool heaterOn) {
+    if (historyCount == HISTORY_POINTS) {
+        memmove(history, history + 1, sizeof(HistoryPoint) * (HISTORY_POINTS - 1));
+        historyCount--;
+    }
+    history[historyCount++] = {tempC, heaterOn};
+}
+
+// After a restart, adds empty points for the time the board was off so the
+// graph's time axis stays true. Needs the clock, so it waits for NTP.
+void fillPowerOffGap() {
+    time_t now;
+    if (!historyGapCheck || !clockValid(now)) return;
+    historyGapCheck = false;
+    if (now <= historySavedAt) return;
+    long missed = (long)((now - historySavedAt) / (HISTORY_INTERVAL_MS / 1000));
+    missed = std::min<long>(missed, HISTORY_POINTS);
+    for (long i = 0; i < missed; i++) pushHistory(NAN, false);
+    if (missed > 0) Serial.printf("[History] Board was off for about %ld points; left as a gap\n", missed);
+}
 
 bool sensorRecent(uint32_t maxAgeMs) { return lastValidReadingAt != 0 && millis() - lastValidReadingAt < maxAgeMs; }
 
@@ -124,16 +198,14 @@ void recordHistorySample(float tempC) {
 
 // Called every loop; closes the current period once it is HISTORY_INTERVAL_MS old.
 void updateHistory() {
+    fillPowerOffGap();
     uint32_t now = millis();
     if (historyPeriodStart == 0) historyPeriodStart = now;
     if (now - historyPeriodStart < HISTORY_INTERVAL_MS) return;
     historyPeriodStart = now;
     if (historySamples == 0) return;
-    if (historyCount == HISTORY_POINTS) {
-        memmove(history, history + 1, sizeof(HistoryPoint) * (HISTORY_POINTS - 1));
-        historyCount--;
-    }
-    history[historyCount++] = {historySum / historySamples, historyHeaterOn};
+    pushHistory(historySum / historySamples, historyHeaterOn);
+    saveHistory();
     historySum = 0;
     historySamples = 0;
     historyHeaterOn = false;
@@ -147,7 +219,11 @@ void printHistory() {
     Serial.printf("[History] %d points, one every %lu min, oldest first:\n", historyCount, (unsigned long)(HISTORY_INTERVAL_MS / 60000));
     for (int i = 0; i < historyCount; i++) {
         unsigned long minsAgo = (historyCount - 1 - i) * HISTORY_INTERVAL_MS / 60000;
-        Serial.printf("  -%4lu min  %.1f C%s\n", minsAgo, history[i].tempC, history[i].heaterOn ? "  heater on" : "");
+        if (std::isnan(history[i].tempC)) {
+            Serial.printf("  -%4lu min  no data (board off)\n", minsAgo);
+        } else {
+            Serial.printf("  -%4lu min  %.1f C%s\n", minsAgo, history[i].tempC, history[i].heaterOn ? "  heater on" : "");
+        }
     }
 }
 
@@ -210,22 +286,26 @@ void showBootMessage(const char* line1, const char* line2 = "") {
 void drawGraph() {
     screen.clearBuffer();
     screen.setFont(u8g2_font_5x8_tf);
-    if (historyCount < 2) {
+    int realPoints = 0;
+    float lo = NAN, hi = NAN;
+    for (int i = 0; i < historyCount; i++) {
+        float t = history[i].tempC;
+        if (std::isnan(t)) continue;
+        realPoints++;
+        lo = std::isnan(lo) ? t : std::min(lo, t);
+        hi = std::isnan(hi) ? t : std::max(hi, t);
+    }
+    if (realPoints < 2) {
         screen.drawStr(0, 8, "Temperature, last 24h");
         screen.drawStr(0, 30, "Collecting data...");
         char buf[32];
-        unsigned long mins = HISTORY_INTERVAL_MS * (2 - historyCount) / 60000;
+        unsigned long mins = HISTORY_INTERVAL_MS * (2 - realPoints) / 60000;
         snprintf(buf, sizeof(buf), "Graph in about %lu min", mins);
         screen.drawStr(0, 42, buf);
         screen.sendBuffer();
         return;
     }
 
-    float lo = history[0].tempC, hi = lo;
-    for (int i = 1; i < historyCount; i++) {
-        lo = std::min(lo, history[i].tempC);
-        hi = std::max(hi, history[i].tempC);
-    }
     char buf[40];
     snprintf(buf, sizeof(buf), "24h min %.1f max %.1f C", lo, hi);
     screen.drawStr(0, 7, buf);
@@ -248,7 +328,13 @@ void drawGraph() {
     int x0 = left + HISTORY_POINTS - historyCount;
     for (int i = 0; i < historyCount; i++) {
         int x = x0 + i;
-        if (i > 0) screen.drawLine(x - 1, yFor(history[i - 1].tempC), x, yFor(history[i].tempC));
+        float t = history[i].tempC;
+        if (std::isnan(t)) continue;
+        if (i > 0 && !std::isnan(history[i - 1].tempC)) {
+            screen.drawLine(x - 1, yFor(history[i - 1].tempC), x, yFor(t));
+        } else {
+            screen.drawPixel(x, yFor(t));
+        }
         if (history[i].heaterOn) screen.drawVLine(x, 59, 4);  // bar under the graph = heater was on
     }
     screen.sendBuffer();
@@ -487,6 +573,7 @@ void setup() {
     pinMode(BUTTON_B_GPIO, INPUT_PULLUP);
 
     showBootMessage("Looking for sensor...");
+    loadHistory();
     setupSensor();
     showBootMessage("Connecting to WiFi:", WIFI_SSID);
     connectWifi();
@@ -503,7 +590,7 @@ void setup() {
     Serial.println("=== SETUP COMPLETE ===\n");
     Serial.println("Button A: heater on/off (switches to MANUAL). Button B: AUTO <-> MANUAL.");
     Serial.println("MANUAL returns to AUTO by itself after 30 minutes.");
-    Serial.println("Serial Monitor commands: on, off, auto, status, tapo, tapodebug, selftest, screen, history");
+    Serial.println("Serial Monitor commands: on, off, auto, status, tapo, tapodebug, selftest, screen, history, clearhistory");
 }
 
 void runCommand(String cmd) {
@@ -533,6 +620,11 @@ void runCommand(String cmd) {
         Serial.println(ok ? "[Test] PASS: KLAP crypto matches python-kasa" : "[Test] FAIL: KLAP crypto differs");
     } else if (cmd == "history") {
         printHistory();
+    } else if (cmd == "clearhistory") {
+        historyCount = 0;
+        historyGapCheck = false;
+        prefs.remove("hist");
+        Serial.println("[History] Cleared");
     } else if (cmd == "screen") {
         screenBegin();
         screenTestPattern();
@@ -545,7 +637,7 @@ void runCommand(String cmd) {
         Serial.println(ok ? String("[Test] PASS: connected via ") + tapo.protocolName() + ", plug is " + plugText()
                           : "[Test] FAIL: " + tapo.lastError());
     } else {
-        Serial.println("Commands: on, off, auto, status, tapo, tapodebug, selftest, screen, history");
+        Serial.println("Commands: on, off, auto, status, tapo, tapodebug, selftest, screen, history, clearhistory");
     }
 }
 

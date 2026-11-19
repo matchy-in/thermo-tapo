@@ -10,6 +10,10 @@ Tapo smart plug (with your heater plugged into it) over your local Wi-Fi:
 - **Button B** switches between AUTO and MANUAL. MANUAL returns to AUTO by itself after 30 minutes (`MANUAL_OVERRIDE_MS`).
 - Every 60 s it reads the plug's real state, so changes made in the Tapo app or with the plug's own button are picked up.
 
+![The finished thermostat](photos/front.jpg)
+![The testing thermostat](photos/testing.jpg)
+![The screen showing the temperature graph](photos/graph.jpg)
+
 ## Wiring
 
 | Sensor pin | Board pin |
