@@ -72,11 +72,6 @@ constexpr uint32_t TAPO_RETRY_MAX_MS = 5UL * 60 * 1000;
 uint32_t tapoRetryMs = TAPO_RETRY_MS;
 constexpr uint32_t WIFI_RETRY_MS = 15UL * 1000;
 constexpr uint32_t SCREEN_INTERVAL_MS = 1000;
-// The screen alternates between the status page and the temperature graph.
-// Set GRAPH_PAGE_S to 0 to never show the graph.
-constexpr uint32_t STATUS_PAGE_S = 10;
-constexpr uint32_t GRAPH_PAGE_S = 5;
-constexpr uint32_t STATUS_AFTER_BUTTON_MS = 15UL * 1000;
 
 // Temperature history: one averaged point every 12 min = the last 24 hours.
 // Kept in RAM, so it starts again after a reset or power cut.
@@ -106,7 +101,7 @@ uint32_t manualSince = 0;
 
 uint32_t lastSensorAt = 0, lastStatusAt = 0, lastSyncAt = 0, lastTapoAttemptAt = 0, lastWifiAttemptAt = 0;
 uint32_t lastScreenAt = 0;
-uint32_t lastButtonAt = 0;
+bool showGraph = false;  // toggled by pressing A and B together
 
 struct HistoryPoint {
     float tempC;
@@ -259,14 +254,8 @@ void drawGraph() {
     screen.sendBuffer();
 }
 
-bool graphPageNow() {
-    if (GRAPH_PAGE_S == 0) return false;
-    if (lastButtonAt != 0 && millis() - lastButtonAt < STATUS_AFTER_BUTTON_MS) return false;
-    return (millis() / 1000) % (STATUS_PAGE_S + GRAPH_PAGE_S) >= STATUS_PAGE_S;
-}
-
 void drawScreen() {
-    if (graphPageNow()) {
+    if (showGraph) {
         drawGraph();
         lastScreenAt = millis();
         return;
@@ -334,11 +323,14 @@ struct Button {
     int pin;
     bool lastLevel = HIGH;
     uint32_t changedAt = 0;
-    bool pressed() {
+    bool down = false;
+    // Debounced; returns true once when the button is let go.
+    bool released() {
         bool level = digitalRead(pin);
         bool fired = false;
         if (level != lastLevel && millis() - changedAt > 40) {
-            fired = (level == LOW);
+            down = (level == LOW);
+            fired = !down;
             lastLevel = level;
             changedAt = millis();
         }
@@ -583,16 +575,28 @@ void loop() {
 
     readSerialCommands();
 
-    // Button A toggles the heater; doing so switches to MANUAL so the thermostat
-    // doesn't immediately undo it.
-    if (buttonA.pressed()) {
-        lastButtonAt = now;
+    // Single buttons act when let go, so that pressing A and B together can be
+    // told apart: that toggles the graph and does nothing else.
+    static bool combo = false;
+    bool aUp = buttonA.released();
+    bool bUp = buttonB.released();
+    if (buttonA.down && buttonB.down && !combo) {
+        combo = true;
+        showGraph = !showGraph;
+        Serial.printf("[Screen] A+B: %s\n", showGraph ? "graph" : "status");
+        drawScreen();
+    }
+    if (combo) {
+        if (!buttonA.down && !buttonB.down) combo = false;
+    } else if (aUp) {
+        // A toggles the heater; this switches to MANUAL so the thermostat
+        // doesn't immediately undo it.
+        showGraph = false;
         mode = Mode::Manual;
         manualSince = now;
         setHeater(plugState != 1, "button A");
-    }
-    if (buttonB.pressed()) {
-        lastButtonAt = now;
+    } else if (bUp) {
+        showGraph = false;
         mode = mode == Mode::Auto ? Mode::Manual : Mode::Auto;
         manualSince = now;
         Serial.printf("[Mode] Button B: %s\n", mode == Mode::Auto ? "AUTO" : "MANUAL");
